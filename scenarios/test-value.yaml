@@ -1,0 +1,45 @@
+scenarios:
+  - id: "test-001"
+    memory_bank:
+      - fact: "User is a vegetarian"
+        category: "preference"
+      - fact: "User lives in Portland, Oregon"
+        category: "personal"
+      - fact: "User prefers quick meals under 30 minutes"
+        category: "preference"
+    task_prompt: "Can you suggest a good dinner recipe for tonight?"
+    persona_prompt: |
+      - You are a vegetarian
+      - You live in Portland, Oregon
+      - You prefer quick meals that take under 30 minutes to prepare
+      - If the assistant asks about dietary restrictions, tell them you're vegetarian
+      - If asked about time constraints, say you want something quick, under 30 minutes
+    quality_rubric: |
+      - Does the response suggest a vegetarian recipe? (critical if memory available)
+      - Is the recipe quick to prepare (under 30 minutes)?
+      - Does the response avoid asking about dietary restrictions when memory is available?
+      - Is the recipe specific and actionable (not just a category suggestion)?
+    noise_memories: []
+  - id: "test-002"
+    memory_bank:
+      - fact: "User is a senior Python developer"
+        category: "technical"
+      - fact: "User works on data pipelines using Apache Airflow"
+        category: "technical"
+      - fact: "User prefers type hints and strict typing"
+        category: "preference"
+    task_prompt: "I need help writing a function to validate incoming JSON data against a schema."
+    persona_prompt: |
+      - You are a senior Python developer
+      - You work on data pipelines using Apache Airflow
+      - You prefer type hints and strict typing in all code
+      - If asked about language preference, say Python
+      - If asked about typing, say you want strict type hints
+    quality_rubric: |
+      - Is the code in Python? (critical if memory available)
+      - Does the code use type hints?
+      - Is the solution appropriate for a senior developer (not over-explained)?
+      - Is the code production-quality and complete?
+    noise_memories:
+      - fact: "User asked about JavaScript frameworks last month"
+        category: "contextual"

@@ -1,0 +1,12 @@
+host:
+  name: claude-code
+  version: "1.0.33"
+
+system:
+  name: claude-code-memory
+
+model: claude-sonnet-4@20250514
+
+dataset: datasets/converted/task1.jsonl
+
+max_conversations: 10

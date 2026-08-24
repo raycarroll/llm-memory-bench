@@ -1,0 +1,36 @@
+[build-system]
+requires = ["setuptools>=68.0", "setuptools-scm>=8.0"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "llm-memory-bench"
+version = "0.1.0"
+description = "Benchmark LLM memory extraction decisions via MCP tool interception"
+requires-python = ">=3.11"
+dependencies = [
+    "anthropic[vertex]>=0.52.0",
+    "openai>=1.30.0",
+    "litellm>=1.40.0",
+    "pydantic>=2.7.0",
+    "pyyaml>=6.0",
+    "click>=8.1.0",
+    "rich>=13.7.0",
+    "jsonlines>=4.0.0",
+    "huggingface-hub>=0.23.0",
+    "jsonschema>=4.20.0",
+]
+
+[project.optional-dependencies]
+embedding = [
+    "sentence-transformers>=3.0",
+]
+dev = [
+    "pytest>=8.0",
+    "pytest-asyncio>=0.23",
+]
+
+[project.scripts]
+llm-memory-bench = "llm_memory_bench.cli:cli"
+
+[tool.setuptools.packages.find]
+where = ["src"]

@@ -1,0 +1,22 @@
+.DS_Store
+__pycache__/
+*.egg-info/
+dist/
+build/
+.eggs/
+*.pyc
+.venv/
+venv/
+
+# Downloaded datasets
+datasets/alpsbench/raw/
+memory-benchmarks/
+
+# Converted datasets (regenerable via `llm-memory-bench convert`)
+datasets/converted/*.yaml
+
+# Run results (large JSON files)
+results/*.json
+
+# Environment
+.env

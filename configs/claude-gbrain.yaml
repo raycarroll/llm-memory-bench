@@ -1,0 +1,15 @@
+host:
+  name: claude-code
+  version: "1.0.33"
+
+system:
+  name: gbrain
+  version: "0.46.19.0"
+  env:
+    GBRAIN_SURFACE: starter
+
+model: claude-sonnet-4@20250514
+
+dataset: datasets/converted/task1.jsonl
+
+max_conversations: 10
