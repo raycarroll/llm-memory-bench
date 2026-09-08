@@ -1,0 +1,25 @@
+ground_truth_type: cumulative
+cumulative_ground_truth:
+  should_store:
+    - fact: "User is a CS student"
+      type: direct
+    - fact: "User's dog is named Archie"
+      type: direct
+  should_not_store: []
+
+conversations:
+  - id: conv-1
+    source: test
+    turns:
+      - role: user
+        content: "I'm a computer science student"
+      - role: assistant
+        content: "That's great! CS is a fascinating field."
+
+  - id: conv-2
+    source: test
+    turns:
+      - role: user
+        content: "My dog Archie loves going to the park"
+      - role: assistant
+        content: "Dogs are wonderful companions!"

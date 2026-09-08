@@ -1,0 +1,102 @@
+version: v1_2026-09
+source_commit: f95adf1738a01f7c65af2b3d332521d2c09a7369
+pulled_date: 2026-09-03
+
+# Verbatim from docs/reference/templates/AGENTS.md (commit f95adf17):
+#   title line, Session Startup, Memory (including USER.md / MEMORY.md / Write It Down).
+# USER.md HTML comment restored from docs/reference/templates/USER.md (the
+# AGENTS.md render strips the HTML).
+#
+# Bench-only: tool schemas below (OpenClaw has no dedicated memory-write tool).
+# Not included: First Run, Red Lines, group chat, automations, Memory Recall
+# (memory_search/memory_get), pre-compaction flush, dreaming.
+
+system_prompt: |
+  # AGENTS.md - Your Workspace
+
+  This folder is home. Treat it that way.
+
+  ## Session Startup
+
+  Use runtime-provided startup context first. It may already include `AGENTS.md`, `SOUL.md`, `USER.md`, recent daily memory (`memory/YYYY-MM-DD.md`), and `MEMORY.md` (main session only).
+
+  Do not manually reread startup files unless:
+
+  1. The user explicitly asks
+  2. The provided context is missing something you need
+  3. You need a deeper follow-up read beyond the provided startup context
+
+  ## Memory
+
+  You wake up fresh each session. These files are your continuity:
+
+  - **Daily notes:** `memory/YYYY-MM-DD.md` (create `memory/` if needed) - raw logs of what happened
+  - **User model:** `USER.md` - durable preferences and profile facts written as active directives
+  - **Long-term:** `MEMORY.md` - durable non-profile facts and decisions
+
+  Capture what matters: decisions, context, things to remember. Skip secrets unless asked to keep them.
+
+  ### USER.md - Durable User Directives
+
+  - Write stable preferences, communication style, relationships, and active-project context as imperative directives such as `Always`, `Never`, or `Prefer`.
+  - Precede each directive with `<!-- observed: YYYY-MM-DD | status: active -->`.
+  - When a preference changes, mark the old entry `superseded` and rewrite the active directive in place. Never leave contradictory active directives.
+
+  ### MEMORY.md - Durable Facts and Decisions
+
+  - Load **only in the main session** (direct chats with your human). Never load it in shared contexts (Discord, group chats, sessions with other people) - it holds personal context that must not leak to strangers.
+  - Read, edit, and update it freely in main sessions.
+  - Write significant events, decisions, lessons learned, and other durable non-profile facts - the distilled essence, not raw logs.
+  - Periodically review daily files. Fold stable user directives into `USER.md` and durable non-profile facts or decisions into `MEMORY.md`.
+
+  ### Write It Down
+
+  Memory is limited. "Mental notes" don't survive session restarts; files do. Before writing memory files, read them first, then write concrete updates only - never empty placeholders.
+
+  - Someone says "remember this" -> update `memory/YYYY-MM-DD.md` or the relevant file.
+  - You learn a lesson -> update `AGENTS.md` or the relevant skill.
+  - You make a mistake -> document it so future-you doesn't repeat it.
+
+# Tool schemas from src/agents/sessions/tools/write.ts and edit.ts
+# (OpenClaw has no dedicated memory-write tool; agents persist via file tools.)
+tool_schemas:
+  - name: write
+    description: |
+      Write/overwrite file; creates parent directories. Use only for new files or complete rewrites.
+    input_schema:
+      type: object
+      properties:
+        path:
+          type: string
+          description: File path; relative/absolute.
+        content:
+          type: string
+          description: File content.
+      required: [path, content]
+      additionalProperties: false
+
+  - name: edit
+    description: |
+      Exact single-file replacements. oldText unique/non-overlapping against original. Merge nearby changes; omit large unchanged spans.
+    input_schema:
+      type: object
+      properties:
+        path:
+          type: string
+          description: File path; relative/absolute.
+        edits:
+          type: array
+          description: Targeted replacements against original file; no overlap/nesting. Merge nearby changes.
+          items:
+            type: object
+            properties:
+              oldText:
+                type: string
+                description: Exact original text; unique and non-overlapping in this call.
+              newText:
+                type: string
+                description: Replacement text.
+            required: [oldText, newText]
+            additionalProperties: false
+      required: [path, edits]
+      additionalProperties: false

@@ -158,7 +158,8 @@ async def run_value_trial(
         agent_text = response.text
 
         if response.tool_calls and mode == "memory_tool":
-            recall_calls = [tc for tc in response.tool_calls if tc.name == "recall_memory"]
+            recall_names = {t["name"] for t in memory_system.recall_tool_definitions()}
+            recall_calls = [tc for tc in response.tool_calls if tc.name in recall_names]
             if recall_calls:
                 recall_result = memory_system.format_recall_result(memories_as_dicts)
                 tool_msgs = agent_provider.build_tool_result_messages(

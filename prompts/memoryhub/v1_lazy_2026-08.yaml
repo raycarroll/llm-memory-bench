@@ -1,0 +1,157 @@
+version: v1_lazy_2026-08
+source_commit: unknown
+pulled_date: 2026-08-31
+
+# System prompt from memoryhub-cli project_config.py
+# Pattern: lazy loading (default for focused sessions)
+system_prompt: |
+  # MemoryHub Agent Instructions: Lazy
+
+  This project uses MemoryHub for persistent, centralized agent memory across
+  conversations. You MUST use it.
+
+  ## At session start
+
+  If your agent framework pre-loads memory context at startup, use it as
+  your working set. Otherwise, follow the manual flow below.
+
+  Authenticate with `register_session(api_key=<your_key>)`, then wait until
+  the user states a task or question with enough detail to form a meaningful
+  search query. Derive a 1-2 sentence summary and call
+  `search_memory(query=<summary>)`. If the opening turn is low-signal
+  ("hi", "can you help me?"), do not search yet -- wait for a follow-up
+  that reveals the topic.
+
+  ## During the session
+
+  - Trust your working set. Re-search only when the user explicitly
+    references a concept you don't have loaded.
+
+  ## Memory hygiene
+
+  - Keep memories concise and self-contained. Another agent should
+    understand them without re-loading the conversation that produced them.
+  - DO write preferences, decisions, architectural choices, tool
+    configuration, and workflow patterns. Skip ephemeral things like "user
+    asked me to read a file."
+  - Use `update_memory` (not `write_memory`) to revise an existing entry —
+    this preserves version history. Use `write_memory` only for new facts.
+  - Set weights deliberately: `1.0` for critical policies, `0.8-0.9` for
+    strong preferences, `0.5-0.7` for nice-to-know context.
+  - Add rationale branches via `parent_id` + `branch_type="rationale"` when
+    the "why" behind a preference is load-bearing.
+  - Use the right scope: `user` for personal preferences, `project` for
+    project-specific context, `organizational` for team/org patterns,
+    `enterprise` for mandated policies.
+
+# Unified memory tool schema from memory-hub-mcp/src/tools/memory.py
+tool_schema:
+  name: memory
+  description: |
+    All-in-one memory operations.
+
+    Read actions:
+      search(query, [scope, project_id, options: max_results, focus, domains, ...])
+        Semantic search. Returns cache-optimized stable ordering by default.
+      list([scope, project_id, options: max_results, cursor, include_branches])
+        Enumerate memories without semantic ranking.
+      read(memory_id, [project_id, options: include_versions, hydrate])
+        Retrieve memory by UUID with optional version history.
+      similar(memory_id, [project_id, options: threshold, max_results])
+        Near-duplicate detection by cosine similarity.
+      relationships(memory_id, [project_id, options: direction, include_provenance])
+        Query graph edges for a memory node.
+      status()
+        Session identity, scopes, project memberships.
+
+    Write actions:
+      write(content, [scope, project_id, options: weight, parent_id, branch_type, ...])
+        Create memory node or branch. scope defaults to 'user' if omitted.
+      update(memory_id, [content, options: weight, metadata, domains])
+        New version with a new UUID; old version preserved with is_current=false.
+      delete(memory_id, [project_id])
+        Soft-delete with cascade.
+      report(memory_id, options: {observed_behavior})
+        Flag contradiction against a stored memory.
+      resolve(options: {contradiction_id, resolution_action})
+        Close contradiction: accept_new|keep_old|mark_both_invalid|manual_merge.
+
+    Params in () are top-level. {braces} in options = required for that action.
+
+  input_schema:
+    type: object
+    properties:
+      action:
+        type: string
+        description: |
+          The operation to perform: search, list, read, similar,
+          relationships, status, write, update, delete, report, resolve.
+      memory_id:
+        type: string
+        description: |
+          UUID of target memory. Required for: read, update, delete,
+          similar, relationships, report.
+      query:
+        type: string
+        description: "Natural language search text. Required for: search."
+      content:
+        type: string
+        description: |
+          Memory text. Required for: write. Optional for: update.
+      scope:
+        type: string
+        description: |
+          Scope: user, project, campaign, role, organizational, enterprise.
+          Required for: write. Optional filter for: search.
+      project_id:
+        type: string
+        description: |
+          Project identifier. Required for: write (project/campaign scope),
+          set_focus, focus_history.
+      options:
+        type: object
+        description: |
+          Action-specific parameters. For write: weight (0.0-1.0,
+          default 0.7), parent_id (UUID for branching), branch_type
+          (rationale/provenance/description/evidence), domains
+          (knowledge domain tags), content_type
+          (experiential/declarative/behavioral), relevant_until
+          (ISO 8601 timestamp for semantic expiry), force (bypass
+          near-duplicate gates).
+    required:
+      - action
+
+# Write response format from memory-hub-mcp/src/tools/write_memory.py
+# Curation-aware response with memory node + curation metadata
+write_response_format:
+  memory:
+    id: "UUID"
+    content: "full memory text"
+    stub: "truncated preview (80 chars)"
+    scope: "user|project|campaign|role|organizational|enterprise"
+    weight: 0.7  # default, range 0.0-1.0
+    content_type: "experiential|declarative|behavioral"
+    is_current: true
+    created_at: "ISO 8601 timestamp"
+  curation:
+    blocked: false
+    similar_count: 0
+    nearest_id: null  # UUID of nearest neighbor if found
+    nearest_score: null  # cosine similarity if found
+    flags: []  # quality/policy flags
+
+# Test setup notes
+design_notes: |
+  MemoryHub uses a unified tool interface with action parameter.
+  This tests whether complex unified tool interfaces help or hinder
+  proactive judgment compared to simpler schemas.
+
+  Key characteristics:
+  - Single tool with action dispatch (not separate read_memory/write_memory)
+  - Scoped writes (user/project/organizational/enterprise)
+  - Weighted memories (0.0-1.0, default 0.7)
+  - Content type classification (experiential/declarative/behavioral)
+  - Version history on updates (new UUID, old preserved)
+  - Branch relationships (parent_id + branch_type)
+  - Soft deletes (reversible)
+  - Curation layer (near-duplicate detection, quality flags)

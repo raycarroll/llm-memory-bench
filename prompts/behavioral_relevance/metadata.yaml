@@ -1,0 +1,31 @@
+name: behavioral_relevance
+description: Behavioral Relevance Filter - optimized for both high recall and precision
+
+source:
+  repo: internal
+  path: llm_memory_bench research (2026-08-31)
+  documentation: docs/three-system-comparison.md
+
+versions:
+  - version: v1_2026-08
+    commit: n/a
+    pulled: 2026-08-31
+    notes: |
+      Initial design based on research of BFCL/MemoryHub/GBrain tradeoffs.
+      Core principle: Store facts that change future behavior.
+      Target: >75% recall, >30% precision (vs current best 55%/22%).
+      FAILED: 0% recall, 3 tool calls - too conservative.
+    default: false
+
+  - version: v2_2026-08
+    commit: n/a
+    pulled: 2026-08-31
+    notes: |
+      Revision after v1 failure (0% recall).
+      Changed default from "skip when uncertain" to "store when uncertain".
+      Added 6th category (Facts & Details), reduced SKIP categories.
+      Target: 75-80% recall, 25-30% precision.
+      Philosophy: Err on side of completeness, not minimalism.
+    default: true
+
+default_version: v2_2026-08

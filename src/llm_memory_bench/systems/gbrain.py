@@ -1,7 +1,13 @@
 from __future__ import annotations
 
+from pathlib import Path
+
+import yaml
+
 from ..providers.base import ToolCall
 from .base import MemorySystem
+
+PROMPTS_DIR = Path(__file__).parent.parent.parent.parent / "prompts" / "gbrain"
 
 # All prompts and schemas sourced from github.com/garrytan/gbrain master branch.
 # gbrain version at time of capture: 0.46.19.0 (package.json)
@@ -12,37 +18,8 @@ from .base import MemorySystem
 # Tool schemas: src/core/verbs.ts (remember), src/core/ops/pages.ts (put_page,
 #   capture operations)
 # Tool descriptions: src/core/operations-descriptions.ts (CAPTURE_DESCRIPTION)
-
-GBRAIN_VERSION = "0.46.19.0"
-PROMPT_SOURCE = "docs/tutorials/connect-coding-agent.md"
-TOOL_SCHEMA_SOURCE = "src/core/verbs.ts + src/core/ops/pages.ts"
-
-# The gbrain MCP server does not inject its own system prompt. The prompt is
-# user-provided via CLAUDE.md/AGENTS.md. This is the recommended "Brain-first
-# protocol" block from the gbrain project's connect tutorial, which users are
-# told to paste into their agent's instructions file.
-SYSTEM_PROMPT = """\
-You are a helpful assistant. You have a knowledge brain connected over MCP.
-
-## Brain-first protocol
-
-Before answering any question about people, companies, decisions, projects, \
-or past context:
-
-1. **Brain first — route by the shape of the question.** Exact names or known \
-tokens → `search` (cheap hybrid, no expansion). Concept, landscape, or \
-"all the X that do Y" questions → `query` FIRST — it recovers synonym \
-phrasings `search` misses, and a populated `search` result set is not proof \
-of coverage. On the verbs surface the same split is `recall` (retrieve) \
-vs `synthesize` (reasoned answer). Check the brain BEFORE answering from \
-memory or asking me. Never ask "who is X?" or "what did we decide about Y?" \
-before checking — the brain probably already knows.
-2. **Write back.** When I make a decision, mention a new person/company, or \
-land on an idea worth keeping, write it to the brain: `remember` on the \
-verbs surface (one fact, with provenance), or `put_page` on the full surface \
-(entity pages under people/, companies/; decisions under decisions/ or \
-notes/). One insight, one page, linked.
-3. **Cite.** When you answer from the brain, name the page you used."""
+#
+# TODO: Migrate tool schemas to YAML files (currently kept in Python)
 
 # Tool schemas from src/core/verbs.ts and src/core/ops/pages.ts, converted
 # from Operation format to MCP tool definition format via
@@ -203,16 +180,60 @@ CAPTURE_TOOL = {
 
 
 class GBrainMemorySystem(MemorySystem):
+    """GBrain MCP knowledge-brain system.
+
+    Loads prompts from versioned YAML files at design time.
+    Tool schemas kept in Python for now (migration TODO).
+    """
+
     name = "gbrain"
     description = (
         "GBrain MCP knowledge-brain system with remember (atomic fact write), "
         "put_page (structured markdown pages), and capture (quick notes)"
     )
-    prompt_version = GBRAIN_VERSION
-    tool_schema_version = GBRAIN_VERSION
+
+    def __init__(self, prompt_version: str | None = None, **kwargs):
+        """Initialize with optional prompt version.
+
+        Args:
+            prompt_version: Prompt version to use (e.g., "v0.46.19_2024-12").
+                           Defaults to default_version from metadata.yaml.
+            **kwargs: Ignored (for compatibility with systems that use scenario, etc.)
+
+        Raises:
+            FileNotFoundError: If prompt files not found
+        """
+        self.prompt_version = prompt_version or self._get_default_version()
+        self._prompts = self._load_prompts(self.prompt_version)
+
+    @classmethod
+    def _get_default_version(cls) -> str:
+        """Load default version from metadata.yaml."""
+        metadata_path = PROMPTS_DIR / "metadata.yaml"
+        if not metadata_path.exists():
+            raise FileNotFoundError(
+                f"Prompt metadata not found: {metadata_path}. "
+                "Run design-time prompt extraction first."
+            )
+        with open(metadata_path) as f:
+            metadata = yaml.safe_load(f)
+        return metadata["default_version"]
+
+    @classmethod
+    def _load_prompts(cls, version: str) -> dict:
+        """Load prompts from versioned YAML file."""
+        prompt_path = PROMPTS_DIR / f"{version}.yaml"
+        if not prompt_path.exists():
+            raise FileNotFoundError(
+                f"Prompt file not found: {prompt_path}. "
+                f"Available versions: {list(p.stem for p in PROMPTS_DIR.glob('v*.yaml'))}"
+            )
+        with open(prompt_path) as f:
+            return yaml.safe_load(f)
 
     def system_prompt(self) -> str:
-        return SYSTEM_PROMPT
+        """Return the system prompt from loaded YAML."""
+        return self._prompts["system_prompt"]
 
     def tool_definitions(self) -> list[dict]:
         return [REMEMBER_TOOL, PUT_PAGE_TOOL, CAPTURE_TOOL]
@@ -251,10 +272,18 @@ class GBrainMemorySystem(MemorySystem):
         return {"status": "ok"}
 
     def version_info(self) -> dict:
+        """Include prompt version, source, and metadata in version info."""
+        # Load metadata for source information
+        metadata_path = PROMPTS_DIR / "metadata.yaml"
+        with open(metadata_path) as f:
+            metadata = yaml.safe_load(f)
+
+        pulled_date = self._prompts.get("pulled_date")
         return {
             "system": self.name,
-            "gbrain_version": GBRAIN_VERSION,
-            "prompt_source": f"github.com/garrytan/gbrain {PROMPT_SOURCE}",
-            "tool_schema_source": f"github.com/garrytan/gbrain {TOOL_SCHEMA_SOURCE}",
-            "last_verified": "2026-08-18",
+            "prompt_version": self.prompt_version,
+            "prompt_source": f"{metadata['source']['repo']} {metadata['source']['path']}",
+            "prompt_pulled_date": str(pulled_date) if pulled_date else None,
+            "source_commit": self._prompts.get("source_commit"),
+            "tool_schema_source": f"{metadata['source']['repo']} {metadata['source']['tool_schemas']}",
         }

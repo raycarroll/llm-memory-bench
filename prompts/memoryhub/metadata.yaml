@@ -1,0 +1,32 @@
+name: memoryhub
+description: MemoryHub unified memory interface with lazy loading pattern
+
+source:
+  repo: https://github.com/rcarroll/memory-hub
+  paths:
+    prompt: memoryhub-cli/src/memoryhub_cli/project_config.py
+    tool_schema: memory-hub-mcp/src/tools/memory.py
+    write_format: memory-hub-mcp/src/tools/write_memory.py
+  documentation: https://github.com/rcarroll/memory-hub
+  notes: |
+    System prompt: _UNIVERSAL_HEADER + _UNIVERSAL_PATTERN_BLOCKS["lazy"] + _HYGIENE_BLOCK
+    from project_config.py. These are the generated agent instructions MemoryHub
+    produces when a user runs `memoryhub config init` with the "lazy" loading
+    pattern (the default for focused sessions).
+
+    Tool schema: the unified memory(action=...) dispatcher with full docstring
+    from memory.py. MemoryHub consolidates all operations into a single tool
+    with an `action` parameter.
+
+versions:
+  - version: v1_lazy_2026-08
+    commit: unknown
+    pulled: 2026-08-31
+    notes: |
+      Lazy loading pattern (default configuration).
+      Universal framework-agnostic instructions for MemoryHub integration.
+      Single unified memory(action=...) tool with scoped writes, weighted
+      memories, and content type classification.
+    default: true
+
+default_version: v1_lazy_2026-08

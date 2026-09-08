@@ -1,0 +1,19 @@
+name: claude_code
+description: Claude Code's file-based auto-memory system with typed memories
+
+source:
+  repo: https://github.com/anthropics/claude-code
+  path: System prompt (internal)
+  documentation: https://docs.anthropic.com/claude/docs/claude-code
+
+versions:
+  - version: v1_2026-08
+    commit: n/a
+    pulled: 2026-08-31
+    notes: |
+      Claude Code auto-memory instructions as of August 2026.
+      Includes: user, feedback, project, reference memory types.
+      Structured frontmatter with name, description, type, body.
+    default: true
+
+default_version: v1_2026-08

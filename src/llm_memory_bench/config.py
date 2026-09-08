@@ -7,6 +7,7 @@ class RunConfig(BaseModel):
     provider: str = "anthropic"
     model: str = "claude-sonnet-4-20250514"
     system: str = "simple"
+    scenario: str | None = None  # For BFCL systems
     judge_provider: str = "anthropic"
     judge_model: str = "claude-sonnet-4-20250514"
     max_conversations: int | None = None

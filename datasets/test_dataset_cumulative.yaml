@@ -1,0 +1,39 @@
+ground_truth_type: cumulative
+cumulative_ground_truth:
+  should_store:
+    - fact: "User is a data scientist"
+      type: direct
+    - fact: "User prefers Python for scripting"
+      type: direct
+    - fact: "User lives in Seattle"
+      type: direct
+  should_not_store: []
+
+conversations:
+  - id: conv-1
+    source: test
+    turns:
+      - role: user
+        content: "I'm a data scientist working with Python"
+        ground_truth:
+          should_store: []
+          should_not_store: []
+      - role: assistant
+        content: "Great! Python is popular for data science."
+        ground_truth:
+          should_store: []
+          should_not_store: []
+
+  - id: conv-2
+    source: test
+    turns:
+      - role: user
+        content: "I live in Seattle and use Python for all my scripts"
+        ground_truth:
+          should_store: []
+          should_not_store: []
+      - role: assistant
+        content: "Seattle has a great tech community!"
+        ground_truth:
+          should_store: []
+          should_not_store: []

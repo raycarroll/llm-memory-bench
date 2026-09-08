@@ -7,44 +7,70 @@ import yaml
 from ..providers.base import ToolCall
 from .base import MemorySystem
 
-PROMPTS_DIR = Path(__file__).parent.parent.parent.parent / "prompts" / "simple"
+PROMPTS_DIR = Path(__file__).parent.parent.parent.parent / "prompts" / "behavioral_relevance"
 
-# TODO: Migrate tool schemas to YAML (keeping in Python for now)
 
-TOOL_DEFINITION = {
-    "name": "add_memory",
+# Simple store_fact tool schema
+STORE_FACT_TOOL = {
+    "name": "store_fact",
     "description": (
-        "Store a long-term fact about the user for future sessions. "
-        "Only store persistent personal information, preferences, or constraints. "
-        "Do not store ephemeral requests, greetings, or task-specific details."
+        "Store a fact that changes how you should behave in future conversations. "
+        "Apply the behavioral relevance test: 'If I forgot this, would my next response "
+        "be less helpful or misaligned?' Only store if YES. "
+        "Categories: preferences, constraints, domain context, corrections, patterns. "
+        "Weight 0.6-1.0 based on behavioral impact (see system prompt for details)."
     ),
     "input_schema": {
         "type": "object",
         "properties": {
             "fact": {
                 "type": "string",
-                "description": "The fact to remember about the user.",
+                "description": "The fact to store. Must be clear and self-contained.",
             },
             "category": {
                 "type": "string",
-                "enum": ["preference", "personal", "technical", "contextual"],
-                "description": "Category of the memory.",
+                "enum": ["preference", "constraint", "domain_context", "correction", "pattern"],
+                "description": (
+                    "Type of fact: preference (how user wants things), constraint (rules), "
+                    "domain_context (background knowledge), correction (fixing mistakes), "
+                    "pattern (repeated behaviors)."
+                ),
+            },
+            "weight": {
+                "type": "number",
+                "description": (
+                    "Impact on future behavior (0.6-1.0): "
+                    "1.0 = critical constraint, 0.9 = strong preference, "
+                    "0.8 = important context/correction, 0.7 = moderate preference/pattern, "
+                    "0.6 = nice-to-know context."
+                ),
+                "minimum": 0.6,
+                "maximum": 1.0,
             },
         },
-        "required": ["fact"],
+        "required": ["fact", "category", "weight"],
     },
 }
 
 
-class SimpleMemorySystem(MemorySystem):
-    name = "simple"
-    description = "Baseline single-tool memory system with add_memory(fact, category)"
+class BehavioralRelevanceSystem(MemorySystem):
+    """Behavioral Relevance Filter - optimized for both high recall and precision.
+
+    Core principle: Store facts that change how you should behave in future interactions.
+    Target: >75% recall, >30% precision (vs current best 55%/22%).
+    """
+
+    name = "behavioral_relevance"
+    description = (
+        "Behavioral Relevance Filter with clear STORE/SKIP categories and examples. "
+        "Optimized for both high recall (>75%) and precision (>30%)."
+    )
 
     def __init__(self, prompt_version: str | None = None, **kwargs):
         """Initialize with optional prompt version.
 
         Args:
-            prompt_version: Prompt version to use (e.g., "v1_2024-11").
+            prompt_version: Prompt version to use (e.g., "v1_2026-08").
                            Defaults to default_version from metadata.yaml.
             **kwargs: Ignored (for compatibility with systems that use scenario, etc.)
 
@@ -80,24 +106,26 @@ class SimpleMemorySystem(MemorySystem):
             return yaml.safe_load(f)
 
     def system_prompt(self) -> str:
-        """Return system prompt from loaded YAML."""
         return self._prompts["system_prompt"]
 
     def tool_definitions(self) -> list[dict]:
-        return [TOOL_DEFINITION]
+        return [STORE_FACT_TOOL]
 
     def extract_stored_fact(self, tool_call: ToolCall) -> str:
+        """Extract the fact from a store_fact tool call."""
         return tool_call.arguments.get("fact", "")
 
     def format_tool_result(self, tool_call: ToolCall) -> dict:
+        """Simulated success response."""
+        category = tool_call.arguments.get("category", "unknown")
+        weight = tool_call.arguments.get("weight", 0.7)
         return {
             "status": "success",
-            "message": f"Memory saved: {tool_call.arguments.get('fact', '')}",
+            "message": f"Stored {category} fact with weight {weight}",
         }
 
     def version_info(self) -> dict:
-        """Include prompt version and source in version info for tracking."""
-        # Load metadata for source information
+        """Include prompt version and source."""
         metadata_path = PROMPTS_DIR / "metadata.yaml"
         with open(metadata_path) as f:
             metadata = yaml.safe_load(f)
@@ -108,5 +136,4 @@ class SimpleMemorySystem(MemorySystem):
             "prompt_version": self.prompt_version,
             "prompt_source": f"{metadata['source']['repo']} {metadata['source']['path']}",
             "prompt_pulled_date": str(pulled_date) if pulled_date else None,
-            "source_commit": self._prompts.get("source_commit"),
         }

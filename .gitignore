@@ -20,3 +20,8 @@ results/*.json
 
 # Environment
 .env
+.env.*
+!.env.example
+
+# Claude Code settings (may contain credentials)
+.claude/

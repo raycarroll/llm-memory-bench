@@ -1,0 +1,19 @@
+name: bfcl_memory_kv
+description: BFCL Memory system with Key-Value backend
+
+source:
+  repo: https://github.com/ShishirPatil/gorilla
+  path: berkeley-function-call-leaderboard/bfcl/eval_checker/eval_runner_helper.py
+  documentation: https://gorilla.cs.berkeley.edu/blogs/16_bfcl_v4_memory.html
+
+versions:
+  - version: v4_2025-07
+    commit: unknown  # TODO: find actual commit hash when gorilla repo is available
+    pulled: 2026-08-31
+    notes: |
+      BFCL V4 memory category (July 2025 release).
+      Extracted from published blog post and leaderboard documentation.
+      Includes: persona prompts for 5 scenarios + core/archival memory instruction.
+    default: true
+
+default_version: v4_2025-07

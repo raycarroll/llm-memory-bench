@@ -124,6 +124,7 @@ This project uses [AlpsBench](https://huggingface.co/datasets/Cosineyx/Alpsbench
   │  │  simple              │     │   LLM-as-judge       │               │
   │  │  claude_code         │     │   (semantic matching) │               │
   │  │  gbrain              │     └──────────────────────┘               │
+  │  │  openclaw            │                                            │
   │  └──────────────────────┘                                             │
   └───────────────────────────────────────────────────────────────────────┘
 ```
@@ -155,6 +156,7 @@ Each memory system is a self-contained unit that bundles everything the LLM need
 | `claude_code` | `save_memory(name, description, type, body)` | 4 memory types with structured guidance | `args["body"]` |
 | `gbrain` | `put_page(slug, body, tags)` + `capture(text)` | Hierarchical slugs, markdown pages | `args["body"]` or `args["text"]` |
 | `memoryhub` | `memory(action="write", content=...)` | Unified dispatcher with scoped writes, weighted memories, content types | `args["content"]` when `action=="write"` |
+| `openclaw` | `write(path, content)` + `edit(path, edits)` | File-backed workspace memory (USER.md / MEMORY.md / daily notes) | `content` or `edits[].newText` when path is a memory file |
 
 ### What gets passed to the LLM (API mode)
 
@@ -615,7 +617,8 @@ src/llm_memory_bench/
 │   ├── simple.py           # Baseline: add_memory(fact, category)
 │   ├── claude_code.py      # Claude Code: save_memory(name, description, type, body)
 │   ├── gbrain.py           # GBrain: put_page(slug, body, tags) + capture(text)
-│   └── memoryhub.py        # MemoryHub: memory(action="write", content=...) unified dispatcher
+│   ├── memoryhub.py        # MemoryHub: memory(action="write", content=...) unified dispatcher
+│   └── openclaw.py         # OpenClaw: write/edit to USER.md, MEMORY.md, daily notes
 │
 ├── providers/              # LLM API adapters
 │   ├── base.py             # LLMProvider ABC, ToolCall, ProviderResponse

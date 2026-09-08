@@ -94,12 +94,25 @@ def _build_matcher(name: str, config: RunConfig | None = None, api_key_env: str 
     if name == "embedding":
         from .matchers.embedding import EmbeddingMatcher
         return EmbeddingMatcher()
+    if name == "hybrid":
+        from .matchers.hybrid import HybridMatcher
+        if config is None:
+            raise click.UsageError("Hybrid matcher requires --judge-provider and --judge-model for LLM escalation")
+        judge_config = RunConfig(
+            provider=config.judge_provider,
+            model=config.judge_model,
+            api_key_env=api_key_env,
+        )
+        return HybridMatcher(get_provider(judge_config))
     raise ValueError(f"Unknown matcher: {name}")
 
 
 def _serialize_run(run_result, config, dataset_path, dataset) -> dict:
     """Serialize a RunResult to the raw run format."""
-    memory_system = get_system(config.system)
+    system_kwargs = {}
+    if config.scenario:
+        system_kwargs["scenario"] = config.scenario
+    memory_system = get_system(config.system, **system_kwargs)
     conv_map = {c.id: c for c in dataset.conversations}
     conversations = []
     for cr in run_result.conversation_results:
@@ -112,11 +125,10 @@ def _serialize_run(run_result, config, dataset_path, dataset) -> dict:
             }
             if conversation and tr.turn_index < len(conversation.turns):
                 gt = conversation.turns[tr.turn_index].ground_truth
-                if gt.should_store:
-                    turn_data["ground_truth"] = [
-                        {"fact": f.fact, "type": f.type.value}
-                        for f in gt.should_store
-                    ]
+                turn_data["ground_truth"] = [
+                    {"fact": f.fact, "type": f.type.value}
+                    for f in gt.should_store
+                ]
             if tr.tool_calls:
                 turn_data["tool_calls"] = [
                     {"name": tc.name, "arguments": tc.arguments}
@@ -151,9 +163,10 @@ console = Console()
 
 
 def _run_id(provider: str, model: str, system: str) -> str:
+    """Generate run filename with format: run_{timestamp}_{provider}_{model}_{system}"""
     model_short = model.replace("/", "-").replace("@", "-")
     ts = datetime.now(timezone.utc).strftime("%Y%m%d-%H%M%S")
-    return f"{provider}_{model_short}_{system}_{ts}"
+    return f"run_{ts}_{provider}_{model_short}_{system}"
 
 
 @click.group()
@@ -162,11 +175,19 @@ def cli():
 
 
 @cli.command()
-@click.option("--source", type=click.Choice(["alpsbench"]), default="alpsbench")
+@click.option("--source", type=click.Choice(["alpsbench", "bfcl-memory"]), default="alpsbench")
 @click.option("--output", type=click.Path(), default="datasets/converted")
 @click.option("--max-conversations", type=int, default=None)
 @click.option("--english-only/--all-languages", default=True)
-def convert(source: str, output: str, max_conversations: int | None, english_only: bool):
+@click.option("--bfcl-repo", type=click.Path(exists=True), default=None,
+              help="Path to cloned gorilla repo (required for bfcl-memory)")
+def convert(
+    source: str,
+    output: str,
+    max_conversations: int | None,
+    english_only: bool,
+    bfcl_repo: str | None,
+):
     """Convert external datasets to benchmark format."""
     if source == "alpsbench":
         from .adapters.alpsbench import convert_alpsbench
@@ -175,6 +196,20 @@ def convert(source: str, output: str, max_conversations: int | None, english_onl
             output_dir=Path(output),
             max_conversations=max_conversations,
             english_only=english_only,
+        )
+    elif source == "bfcl-memory":
+        from .adapters.bfcl_memory import convert_bfcl_memory
+
+        if not bfcl_repo:
+            console.print(
+                "[bold red]Error:[/bold red] --bfcl-repo required for BFCL memory conversion.\n"
+                "Clone the repo first: git clone https://github.com/ShishirPatil/gorilla.git"
+            )
+            raise SystemExit(1)
+
+        convert_bfcl_memory(
+            bfcl_repo_path=Path(bfcl_repo),
+            output_dir=Path(output),
         )
 
 
@@ -189,6 +224,11 @@ def convert(source: str, output: str, max_conversations: int | None, english_onl
     default="simple",
     help="Memory system to benchmark (defines prompt, tools, and extraction).",
 )
+@click.option(
+    "--scenario",
+    default=None,
+    help="Scenario for BFCL systems (student, customer, finance, healthcare, notetaker). Required for bfcl_memory_* systems.",
+)
 @click.option("--max-conversations", type=int, default=None)
 @click.option("--output", type=click.Path(), default=None)
 @click.option("--api-key-env", default=None)
@@ -197,6 +237,7 @@ def run(
     provider: str,
     model: str,
     system_name: str,
+    scenario: str | None,
     max_conversations: int | None,
     output: str | None,
     api_key_env: str | None,
@@ -209,6 +250,7 @@ def run(
         provider=provider,
         model=model,
         system=system_name,
+        scenario=scenario,
         max_conversations=max_conversations,
         api_key_env=api_key_env,
     )
@@ -222,6 +264,9 @@ def run(
     try:
         run_result = asyncio.run(run_benchmark(dataset, config))
     except ProviderError as e:
+        console.print(f"\n[bold red]Error:[/bold red] {e}")
+        raise SystemExit(1)
+    except ValueError as e:
         console.print(f"\n[bold red]Error:[/bold red] {e}")
         raise SystemExit(1)
 
@@ -271,35 +316,41 @@ def evaluate(
     from .runner import ConversationResult as CR, RunResult, TurnResult
     from .providers.base import ToolCall
 
-    has_ground_truth = any(
-        "ground_truth" in turn
-        for conv in run_data["conversations"]
-        for turn in conv.get("turns", [])
-    )
-
-    if has_ground_truth:
-        dataset_convs = []
-        for conv in run_data["conversations"]:
-            turns = []
-            for turn in conv.get("turns", []):
-                gt_data = turn.get("ground_truth", [])
-                gt = GroundTruth(should_store=[
-                    ExpectedFact(fact=f["fact"], type=FactType(f.get("type", "direct")))
-                    for f in gt_data
-                ])
-                turns.append(Turn(role=turn["role"], content="", ground_truth=gt))
-            dataset_convs.append(Conversation(id=conv["conversation_id"], turns=turns))
-        dataset = Dataset(conversations=dataset_convs)
-    else:
-        if not dataset_path:
-            dataset_path = run_data.get("dataset", {}).get("path")
-        if not dataset_path or not Path(dataset_path).exists():
-            console.print(
-                "[bold red]Error:[/bold red] Run file has no embedded ground truth and "
-                "dataset path not found. Specify --dataset explicitly.",
-            )
-            raise SystemExit(1)
+    # If --dataset is explicitly provided, always use it (takes precedence over embedded ground truth)
+    if dataset_path and Path(dataset_path).exists():
         dataset = load_dataset(Path(dataset_path))
+    else:
+        # Otherwise, try embedded ground truth
+        has_ground_truth = any(
+            "ground_truth" in turn
+            for conv in run_data["conversations"]
+            for turn in conv.get("turns", [])
+        )
+
+        if has_ground_truth:
+            dataset_convs = []
+            for conv in run_data["conversations"]:
+                turns = []
+                for turn in conv.get("turns", []):
+                    gt_data = turn.get("ground_truth", [])
+                    gt = GroundTruth(should_store=[
+                        ExpectedFact(fact=f["fact"], type=FactType(f.get("type", "direct")))
+                        for f in gt_data
+                    ])
+                    turns.append(Turn(role=turn["role"], content="", ground_truth=gt))
+                dataset_convs.append(Conversation(id=conv["conversation_id"], turns=turns))
+            dataset = Dataset(conversations=dataset_convs)
+        else:
+            # Otherwise, try path from run file
+            if not dataset_path:
+                dataset_path = run_data.get("dataset", {}).get("path")
+            if not dataset_path or not Path(dataset_path).exists():
+                console.print(
+                    "[bold red]Error:[/bold red] Run file has no embedded ground truth and "
+                    "dataset path not found. Specify --dataset explicitly.",
+                )
+                raise SystemExit(1)
+            dataset = load_dataset(Path(dataset_path))
 
     run_result = RunResult(config=run_config, total_time_ms=run_data.get("total_time_ms", 0))
     for conv in run_data["conversations"]:
@@ -320,7 +371,7 @@ def evaluate(
         run_result.conversation_results.append(cr)
 
     judge_config = None
-    if matcher_name == "llm":
+    if matcher_name in ("llm", "hybrid"):
         judge_config = RunConfig(
             provider=judge_provider or run_config.provider,
             model=judge_model or run_config.model,
@@ -338,13 +389,16 @@ def evaluate(
         console.print(f"\n[bold red]Evaluation error:[/bold red] {e}")
         raise SystemExit(1)
 
-    metrics = eval_result.metrics()
+    metrics = eval_result.metrics(dataset.ground_truth_type)
     type_metrics = eval_result.metrics_by_fact_type()
 
     if not output:
-        run_stem = Path(run_file).stem
+        # Generate eval filename: eval_{timestamp}_{provider}_{model}_{system}_{matcher}
         ts = datetime.now(timezone.utc).strftime("%Y%m%d-%H%M%S")
-        output = f"results/eval_{run_stem}_{matcher_name}_{ts}.json"
+        provider = run_config.provider
+        model_short = run_config.model.replace("/", "-").replace("@", "-")
+        system = run_config.system
+        output = f"results/eval_{ts}_{provider}_{model_short}_{system}_{matcher_name}.json"
 
     dataset_info: dict = {"summary": dataset.summary()}
     if dataset_path:
@@ -352,11 +406,15 @@ def evaluate(
     elif run_data.get("dataset", {}).get("path"):
         dataset_info["path"] = run_data["dataset"]["path"]
 
+    system_kwargs = {}
+    if run_config.scenario:
+        system_kwargs["scenario"] = run_config.scenario
+
     eval_data = {
         "source_run": str(Path(run_file).resolve()),
         "matcher": matcher_name,
         "config": run_config.model_dump(),
-        "memory_system": get_system(system_name).version_info(),
+        "memory_system": get_system(system_name, **system_kwargs).version_info(),
         "dataset": dataset_info,
         "metrics": metrics,
         "metrics_by_fact_type": type_metrics,
@@ -410,14 +468,44 @@ def compare(result_files: tuple[str, ...]):
         label = f"{r['config']['provider']}/{r['config']['model']}\n({r['config'].get('system', 'simple')})"
         table.add_column(label, justify="right")
 
-    metric_keys = [
-        "extraction_precision",
-        "extraction_recall",
-        "extraction_f1",
-        "noise_resistance_rate",
-        "schema_validity_rate",
-        "total_tool_calls",
-    ]
+    # Collect all metric keys from all results and determine type
+    all_metrics_keys = set()
+    for r in results:
+        all_metrics_keys.update(r.get("metrics", {}).keys())
+
+    # Determine metric type and build appropriate key list
+    if any("per_turn_extraction_precision" in r.get("metrics", {}) for r in results):
+        # Per-turn metrics
+        metric_keys = [
+            "per_turn_extraction_precision",
+            "per_turn_extraction_recall",
+            "per_turn_extraction_f1",
+            "per_turn_noise_resistance_rate",
+            "schema_validity_rate",
+            "total_tool_calls",
+        ]
+    elif any("cumulative_extraction_precision" in r.get("metrics", {}) for r in results):
+        # Cumulative metrics
+        metric_keys = [
+            "cumulative_extraction_precision",
+            "cumulative_extraction_recall",
+            "cumulative_extraction_f1",
+            "schema_validity_rate",
+            "total_tool_calls",
+        ]
+    else:
+        # Fallback to old names for backward compatibility
+        metric_keys = [
+            "extraction_precision",
+            "extraction_recall",
+            "extraction_f1",
+            "noise_resistance_rate",
+            "schema_validity_rate",
+            "total_tool_calls",
+        ]
+
+    # Only show metrics that exist in at least one result
+    metric_keys = [k for k in metric_keys if k in all_metrics_keys]
 
     for key in metric_keys:
         row = [key]
@@ -509,7 +597,9 @@ def value_run(
 ):
     """Run the memory value benchmark with paired trials."""
     if not output:
-        output = f"results/value_{_run_id(provider, model, system_name)}.json"
+        model_short = model.replace("/", "-").replace("@", "-")
+        ts = datetime.now(timezone.utc).strftime("%Y%m%d-%H%M%S")
+        output = f"results/value_{ts}_{provider}_{model_short}_{system_name}.json"
     from .value.dataset import load_value_dataset
     from .value.evaluator import evaluate_value_run
     from .value.runner import run_value_benchmark
@@ -656,31 +746,61 @@ def _print_metrics_table(metrics: dict, type_metrics: dict, tokens: dict | None 
     table.add_column("Metric", style="bold")
     table.add_column("Value", justify="right")
 
-    for key in [
-        "extraction_precision",
-        "extraction_recall",
-        "extraction_f1",
-        "noise_resistance_rate",
-        "schema_validity_rate",
-    ]:
-        val = metrics[key]
-        table.add_row(key, f"{val:.4f}")
+    # Detect metric type (per-turn vs cumulative)
+    if "per_turn_extraction_precision" in metrics:
+        metric_keys = [
+            "per_turn_extraction_precision",
+            "per_turn_extraction_recall",
+            "per_turn_extraction_f1",
+            "per_turn_noise_resistance_rate",
+            "schema_validity_rate",
+        ]
+    elif "cumulative_extraction_precision" in metrics:
+        metric_keys = [
+            "cumulative_extraction_precision",
+            "cumulative_extraction_recall",
+            "cumulative_extraction_f1",
+            "schema_validity_rate",
+        ]
+    else:
+        # Fallback to old names for backward compatibility
+        metric_keys = [
+            "extraction_precision",
+            "extraction_recall",
+            "extraction_f1",
+            "noise_resistance_rate",
+            "schema_validity_rate",
+        ]
+
+    for key in metric_keys:
+        if key in metrics:
+            val = metrics[key]
+            table.add_row(key, f"{val:.4f}")
 
     table.add_section()
-    table.add_row("true_positives", str(metrics["true_positives"]))
-    table.add_row("false_negatives", str(metrics["false_negatives"]))
-    table.add_row("false_positives", str(metrics["false_positives"]))
-    table.add_row("noise_turns", str(metrics["noise_turns"]))
-    table.add_row("noise_violations", str(metrics["noise_violations"]))
+    # Format counts nicely (show decimals for partial matches)
+    tp = metrics["true_positives"]
+    fn = metrics["false_negatives"]
+    fp = metrics["false_positives"]
+    table.add_row("true_positives", f"{tp:.1f}" if isinstance(tp, float) and tp % 1 != 0 else str(int(tp)))
+    table.add_row("false_negatives", f"{fn:.1f}" if isinstance(fn, float) and fn % 1 != 0 else str(int(fn)))
+    table.add_row("false_positives", str(fp))
+
+    # Only show noise metrics if present (not available for cumulative)
+    if "noise_turns" in metrics:
+        table.add_row("noise_turns", str(metrics["noise_turns"]))
+    if "noise_violations" in metrics:
+        table.add_row("noise_violations", str(metrics["noise_violations"]))
+
     table.add_row("total_tool_calls", str(metrics["total_tool_calls"]))
 
     if tokens:
         table.add_section()
-        table.add_row("input_tokens", f"{tokens['input_tokens']:,}")
-        table.add_row("output_tokens", f"{tokens['output_tokens']:,}")
-        table.add_row("total_tokens", f"{tokens['total_tokens']:,}")
+        table.add_row("run_input_tokens", f"{tokens['input_tokens']:,}")
+        table.add_row("run_output_tokens", f"{tokens['output_tokens']:,}")
+        table.add_row("run_total_tokens", f"{tokens['total_tokens']:,}")
         if "estimated_cost_usd" in tokens:
-            table.add_row("estimated_cost", f"${tokens['estimated_cost_usd']:.4f}")
+            table.add_row("run_cost_estimate", f"${tokens['estimated_cost_usd']:.4f}")
 
     console.print(table)
 
@@ -692,7 +812,11 @@ def _print_metrics_table(metrics: dict, type_metrics: dict, tokens: dict | None 
         type_table.add_column("FN", justify="right")
 
         for t, m in sorted(type_metrics.items()):
-            type_table.add_row(t, f"{m['recall']:.4f}", str(m["tp"]), str(m["fn"]))
+            tp_val = m["tp"]
+            fn_val = m["fn"]
+            tp_str = f"{tp_val:.1f}" if isinstance(tp_val, float) and tp_val % 1 != 0 else str(int(tp_val))
+            fn_str = f"{fn_val:.1f}" if isinstance(fn_val, float) and fn_val % 1 != 0 else str(int(fn_val))
+            type_table.add_row(t, f"{m['recall']:.4f}", tp_str, fn_str)
 
         console.print(type_table)
 
@@ -712,7 +836,7 @@ def bench(config_path: str, output: str | None):
 
     if not output:
         ts = datetime.now(timezone.utc).strftime("%Y%m%d-%H%M%S")
-        output = f"results/{config.host_name}_{config.system_name}_{ts}.json"
+        output = f"results/bench_{ts}_{config.host_name}_{config.system_name}.json"
 
     console.print(
         f"Benchmark: host={config.host_name}@{config.host_version}, "

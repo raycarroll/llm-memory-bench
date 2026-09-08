@@ -1,0 +1,19 @@
+name: simple
+description: Baseline single-tool memory system with add_memory(fact, category)
+
+source:
+  repo: internal
+  path: src/llm_memory_bench/systems/simple.py
+  documentation: null
+
+versions:
+  - version: v1_2024-11
+    commit: internal
+    pulled: 2026-08-31
+    notes: |
+      Baseline memory system with simple add_memory tool.
+      Single-tool interface with fact and category parameters.
+      Includes clear guidelines on what to save vs. what to skip.
+    default: true
+
+default_version: v1_2024-11

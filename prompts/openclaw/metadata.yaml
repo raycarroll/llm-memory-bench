@@ -1,0 +1,27 @@
+name: openclaw
+description: OpenClaw file-backed memory (USER.md, MEMORY.md, daily notes)
+
+source:
+  repo: https://github.com/openclaw/openclaw
+  paths:
+    prompt: docs/reference/templates/AGENTS.md
+    write_policy: docs/concepts/memory.md
+    write_tool: src/agents/sessions/tools/write.ts
+    edit_tool: src/agents/sessions/tools/edit.ts
+    recall_tools: extensions/memory-core/src/memory-tool-contract.ts
+  documentation: https://docs.openclaw.ai/concepts/memory-architecture
+
+versions:
+  - version: v1_2026-09
+    commit: f95adf1738a01f7c65af2b3d332521d2c09a7369
+    pulled: 2026-09-03
+    notes: |
+      OpenClaw memory as of 2026-09-03 (main @ f95adf17).
+      Write path is generic file tools (write/edit) targeting USER.md,
+      MEMORY.md, and memory/YYYY-MM-DD.md — there is no dedicated save-memory
+      tool. Prompt is verbatim AGENTS.md Session Startup + Memory (USER.md
+      HTML comment restored from the USER.md template). Recall tools are
+      modeled for the value benchmark only; dreaming/flush are out of scope.
+    default: true
+
+default_version: v1_2026-09

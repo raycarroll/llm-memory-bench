@@ -11,6 +11,14 @@ class MemorySystem(ABC):
     name: str
     description: str
 
+    def __init__(self, **kwargs):
+        """Initialize system with optional configuration.
+
+        Most systems don't need configuration and can use the default no-op implementation.
+        BFCL systems require 'scenario' parameter.
+        """
+        pass
+
     @abstractmethod
     def system_prompt(self) -> str:
         """The actual system prompt this memory system uses."""

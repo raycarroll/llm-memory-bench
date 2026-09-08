@@ -1,0 +1,90 @@
+version: v0.46.19_2024-12
+source_commit: unknown
+pulled_date: 2026-08-31
+
+# System prompt from docs/tutorials/connect-coding-agent.md "Brain-first protocol" block
+# The canonical text gbrain tells users to paste into CLAUDE.md / AGENTS.md
+system_prompt: |
+  You are a helpful assistant. You have a knowledge brain connected over MCP.
+
+  ## Brain-first protocol
+
+  Before answering any question about people, companies, decisions, projects, or past context:
+
+  1. **Brain first — route by the shape of the question.** Exact names or known tokens → `search` (cheap hybrid, no expansion). Concept, landscape, or "all the X that do Y" questions → `query` FIRST — it recovers synonym phrasings `search` misses, and a populated `search` result set is not proof of coverage. On the verbs surface the same split is `recall` (retrieve) vs `synthesize` (reasoned answer). Check the brain BEFORE answering from memory or asking me. Never ask "who is X?" or "what did we decide about Y?" before checking — the brain probably already knows.
+  2. **Write back.** When I make a decision, mention a new person/company, or land on an idea worth keeping, write it to the brain: `remember` on the verbs surface (one fact, with provenance), or `put_page` on the full surface (entity pages under people/, companies/; decisions under decisions/ or notes/). One insight, one page, linked.
+  3. **Cite.** When you answer from the brain, name the page you used.
+
+# Tool schemas from src/core/verbs.ts and src/core/ops/pages.ts
+# Converted from Operation format to MCP tool definition format via src/mcp/tool-defs.ts buildToolDefs()
+tool_schemas:
+  - name: remember
+    description: |
+      MEMORY VERB (v1): save one fact to durable agent memory — the protocol write verb. provenance is REQUIRED (free text, e.g. "conversation 2026-06-12", "user said in chat", "import: notes.md"). Set `entity` whenever the fact is about a specific person/company/project — entity-scoped recall will not find it otherwise. ttl accepts duration shorthand ("30d", "12h") or an absolute ISO 8601 timestamp; ISO-8601 durations like "P30D" are rejected with a fix. visibility defaults to "world" (readable by every agent connected to this brain; pass "private" for local-CLI-only facts). Response: branch on `status` (inserted|duplicate|superseded), never on `status_text` (human rendering only). On duplicate, `id` is the EXISTING fact's id. For bulk extraction from a raw transcript use extract_facts instead.
+    input_schema:
+      type: object
+      properties:
+        fact:
+          type: string
+          description: The fact to remember, one claim per call.
+        provenance:
+          type: string
+          description: |
+            Where this fact came from (REQUIRED, free text, max 500 chars). Examples: "conversation 2026-06-12", "user said in chat", "import: meeting-notes.md".
+        ttl:
+          type: string
+          description: |
+            Optional expiry: duration shorthand ("30d", "12h", "45m") or absolute ISO 8601 timestamp. NOT ISO-8601 durations ("P30D" is rejected). Omit = never expires.
+        entity:
+          type: string
+          description: |
+            Person/company/project this fact is about (name or slug; canonicalized server-side). Set it whenever the fact has a subject — entity-scoped recall misses unattributed facts.
+        kind:
+          type: string
+          enum: [event, preference, commitment, belief, fact]
+          description: |
+            Fact kind: event | preference | commitment | belief | fact (default).
+        visibility:
+          type: string
+          enum: [world, private]
+          description: |
+            world (default): readable by every agent connected to this brain. private: local CLI reads only.
+      required: [fact, provenance]
+
+  - name: put_page
+    description: |
+      Write/update a page (markdown with frontmatter). Chunks, embeds, reconciles tags, and (when auto_link/auto_timeline are enabled) extracts + reconciles graph links and timeline entries. For large content on Windows (pipe-buffer limit ~45KB) or any file-as-input workflow, use `gbrain capture --file PATH --slug SLUG` — capture reads the file as a Buffer with a binary-NUL guard and adds provenance write-through (v0.39.3.0).
+    input_schema:
+      type: object
+      properties:
+        slug:
+          type: string
+          description: Page slug
+        content:
+          type: string
+          description: Full markdown content with YAML frontmatter
+        allow_empty:
+          type: boolean
+          description: |
+            Allow overwriting an existing non-empty page with empty/whitespace-only content (default: false). Without it, put_page rejects the empty overwrite — the empty-stdin failure class.
+      required: [slug, content]
+
+  - name: capture
+    description: |
+      Capture a quick note into the brain — the "just remember this" write. Auto-derives a stable inbox/ slug from the content date + hash (recapturing identical text is idempotent), merges frontmatter, refuses binary/empty payloads, then delegates to put_page (inheriting its fences and provenance stamping). Prefer capture for quick notes and put_page when you need to control the slug, type, or an existing page's content. For structured facts about entities, prefer remember.
+    input_schema:
+      type: object
+      properties:
+        content:
+          type: string
+          description: |
+            Markdown or plain text to capture. File paths are NOT accepted over MCP — read the file yourself and pass its content (the CLI --file lane is local-only).
+        slug:
+          type: string
+          description: |
+            Target slug. Default: inbox/YYYY-MM-DD-<sha8-of-content> (stable per content — recapturing identical text hits the same slug); type diary/event routes under life/. Fenced clients: the default lands under your first bound prefix.
+        type:
+          type: string
+          description: |
+            Page type for the stamped frontmatter (default 'note').
+      required: [content]

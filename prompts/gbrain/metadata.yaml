@@ -1,0 +1,21 @@
+name: gbrain
+description: GBrain MCP knowledge-brain system with remember, put_page, and capture
+
+source:
+  repo: https://github.com/garrytan/gbrain
+  path: docs/tutorials/connect-coding-agent.md
+  tool_schemas: src/core/verbs.ts + src/core/ops/pages.ts
+  documentation: https://github.com/garrytan/gbrain
+
+versions:
+  - version: v0.46.19_2024-12
+    commit: unknown  # package.json version 0.46.19.0
+    pulled: 2026-08-31
+    notes: |
+      GBrain v0.46.19.0 prompts and tool schemas.
+      System prompt from "Brain-first protocol" tutorial (connect-coding-agent.md).
+      Tool schemas from verbs.ts (remember) and ops/pages.ts (put_page, capture).
+      Last verified against GitHub master: 2026-08-18
+    default: true
+
+default_version: v0.46.19_2024-12

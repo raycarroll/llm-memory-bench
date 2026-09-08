@@ -64,10 +64,12 @@ llm-memory-bench list-systems
 
 | System | Description |
 |--------|-------------|
-| `simple` | Baseline single-tool system: `add_memory(fact, category)` |
+| `bfcl_baseline` | BFCL-style generic prompt with no proactive guidance (reactive baseline for comparison) |
+| `simple` | Basic proactive system: `add_memory(fact, category)` with explicit storage guidance |
 | `claude_code` | Claude Code's auto-memory: typed memories (user/feedback/project/reference) with structured `save_memory` tool |
 | `gbrain` | GBrain MCP knowledge-brain: `put_page` with slug-organized markdown pages + `capture` for quick one-liners |
 | `memoryhub` | MemoryHub unified `memory(action=...)` dispatcher with scoped writes, weighted memories, and content type classification |
+| `openclaw` | OpenClaw file-backed memory: `write`/`edit` to `USER.md`, `MEMORY.md`, and `memory/YYYY-MM-DD.md` daily notes |
 
 ## Benchmarks
 
@@ -106,6 +108,8 @@ llm-memory-bench run \
 - **noise_resistance_rate** — fraction of noise turns where no tool was called
 - **schema_validity_rate** — fraction of tool calls with valid arguments per the schema
 
+See [docs/metrics.md](docs/metrics.md) for detailed definitions, formulas, interpretation guide, and comparison to BFCL metrics.
+
 ### Value benchmark
 
 Tests whether stored memories actually improve task performance. Generates scenarios from conversations, then runs paired trials — one with memory and one without — to measure the delta.
@@ -137,6 +141,54 @@ llm-memory-bench value-run \
 | `--user-sim-provider` | same as `--provider` | Provider for the simulated user |
 | `--user-sim-model` | same as `--model` | Model for the simulated user |
 | `--max-scenarios` | all | Limit scenarios for quick tests |
+
+## Baseline comparison
+
+To isolate **proactive judgment** from general tool-calling ability, compare against [BFCL](https://gorilla.cs.berkeley.edu/leaderboard.html) (Berkeley Function Calling Leaderboard):
+
+```bash
+# Install BFCL
+pip install bfcl
+
+# Run baseline (explicit function requests)
+bfcl generate --model claude-sonnet-4-20250514 --test-category live_simple
+bfcl evaluate --model claude-sonnet-4-20250514 --test-category live_simple
+
+# Run memory benchmark (proactive judgment)
+llm-memory-bench run --dataset datasets/converted/alpsbench-task1.yaml \
+  --system memoryhub --model claude-sonnet-4-20250514
+
+# Compare scores
+cat ~/.cache/bfcl/result/claude-sonnet-4-20250514/live_simple_score.json
+cat results/[your-run].json
+```
+
+**The gap** between BFCL accuracy and AlpsBench recall represents the cost of proactive judgment. If BFCL scores are high but memory extraction is low, the model can execute tools correctly when told to, but struggles to identify what's worth storing in natural conversation.
+
+See [docs/baseline-comparison.md](docs/baseline-comparison.md) for detailed analysis.
+
+## Prompt design comparison
+
+The `bfcl_baseline` system uses generic prompts (like BFCL does) to establish a floor, then compare against memory-optimized systems:
+
+```bash
+# Test prompt impact on same model
+for sys in bfcl_baseline simple memoryhub; do
+  llm-memory-bench run --dataset datasets/converted/alpsbench-task1.yaml \
+    --system $sys --model claude-sonnet-4@20250514
+done
+
+llm-memory-bench compare results/*.json
+```
+
+**Expected pattern:**
+- `bfcl_baseline`: ~28% recall (generic "use tools when needed" prompt)
+- `simple`: ~65% recall (+37% with basic proactive guidance)
+- `memoryhub`: ~72% recall (+7% with comprehensive prompting)
+
+This isolates the **value of proactive prompt design** separate from model capability.
+
+See [docs/prompt-comparison.md](docs/prompt-comparison.md) for detailed workflow and interpretation.
 
 ### Containerised mode
 

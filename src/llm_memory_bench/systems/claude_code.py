@@ -1,5 +1,9 @@
 from __future__ import annotations
 
+from pathlib import Path
+
+import yaml
+
 from ..providers.base import ToolCall
 from .base import MemorySystem
 
@@ -8,62 +12,7 @@ from .base import MemorySystem
 # must decide what to write, which type to use, and how to structure the
 # frontmatter and body.
 
-SYSTEM_PROMPT = """\
-You are a helpful assistant. You have a persistent, file-based memory system. \
-You should build up this memory over time so that future conversations can \
-have a complete picture of who the user is, how they'd like to collaborate \
-with you, what behaviors to avoid or repeat, and the context behind the work \
-the user gives you.
-
-## Types of memory
-
-There are several discrete types of memory that you can store:
-
-### user
-Contain information about the user's role, goals, responsibilities, and \
-knowledge. Great user memories help you tailor your future behavior to the \
-user's preferences and perspective. Your goal in reading and writing these \
-memories is to build up an understanding of who the user is and how you can \
-be most helpful to them specifically. Avoid writing memories about the user \
-that could be viewed as a negative judgement or that are not relevant to the \
-work you're trying to accomplish together.
-
-### feedback
-Guidance the user has given you about how to approach work — both what to \
-avoid and what to keep doing. Record from failure AND success: if you only \
-save corrections, you will avoid past mistakes but drift away from approaches \
-the user has already validated. Include *why* so you can judge edge cases later.
-
-### project
-Information that you learn about ongoing work, goals, initiatives, bugs, or \
-incidents within the project that is not otherwise derivable from the code or \
-git history. Always convert relative dates to absolute dates when saving.
-
-### reference
-Stores pointers to where information can be found in external systems. These \
-memories allow you to remember where to look to find up-to-date information \
-outside of the project directory.
-
-## What NOT to save
-
-- Code patterns, conventions, architecture, file paths, or project structure \
-— these can be derived by reading the current project state.
-- Git history, recent changes, or who-changed-what — git log / git blame are \
-authoritative.
-- Debugging solutions or fix recipes — the fix is in the code; the commit \
-message has the context.
-- Ephemeral task details: in-progress work, temporary state, current \
-conversation context.
-
-## When to save
-
-Save immediately when you learn details about the user's role, preferences, \
-responsibilities, or knowledge. Save when the user corrects your approach \
-OR confirms a non-obvious approach worked. Save when you learn who is doing \
-what, why, or by when. Save when you learn about resources in external systems.
-
-When in doubt, check if there is an existing memory you can update before \
-writing a new one. Do not write duplicate memories."""
+PROMPTS_DIR = Path(__file__).parent.parent.parent.parent / "prompts" / "claude_code"
 
 SAVE_MEMORY_TOOL = {
     "name": "save_memory",
@@ -115,8 +64,34 @@ class ClaudeCodeMemorySystem(MemorySystem):
         "(user, feedback, project, reference) and structured frontmatter"
     )
 
+    def __init__(self, prompt_version: str | None = None, **kwargs):
+        """Initialize with optional prompt version.
+
+        Args:
+            prompt_version: Prompt version to use (e.g., "v1_2026-08").
+                           Defaults to default_version from metadata.yaml.
+            **kwargs: Ignored (for compatibility with systems that use scenario, etc.)
+        """
+        self.prompt_version = prompt_version or self._get_default_version()
+        self._prompts = self._load_prompts(self.prompt_version)
+
+    @classmethod
+    def _get_default_version(cls) -> str:
+        """Load default version from metadata.yaml."""
+        metadata_path = PROMPTS_DIR / "metadata.yaml"
+        with open(metadata_path) as f:
+            metadata = yaml.safe_load(f)
+        return metadata["default_version"]
+
+    @classmethod
+    def _load_prompts(cls, version: str) -> dict:
+        """Load prompts from versioned YAML file."""
+        prompt_path = PROMPTS_DIR / f"{version}.yaml"
+        with open(prompt_path) as f:
+            return yaml.safe_load(f)
+
     def system_prompt(self) -> str:
-        return SYSTEM_PROMPT
+        return self._prompts["system_prompt"]
 
     def tool_definitions(self) -> list[dict]:
         return [SAVE_MEMORY_TOOL]
@@ -133,4 +108,18 @@ class ClaudeCodeMemorySystem(MemorySystem):
         return {
             "status": "success",
             "message": f"Memory saved to {name}.md",
+        }
+
+    def version_info(self) -> dict:
+        """Include prompt version and source."""
+        metadata_path = PROMPTS_DIR / "metadata.yaml"
+        with open(metadata_path) as f:
+            metadata = yaml.safe_load(f)
+
+        pulled_date = self._prompts.get("pulled_date")
+        return {
+            "system": self.name,
+            "prompt_version": self.prompt_version,
+            "prompt_source": f"{metadata['source']['repo']} {metadata['source']['path']}",
+            "prompt_pulled_date": str(pulled_date) if pulled_date else None,
         }
