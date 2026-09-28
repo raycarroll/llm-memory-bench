@@ -39,12 +39,27 @@ There are two orthogonal axes: **what** you're measuring (benchmark) and **how**
 
 **Execution modes** (how):
 
-| Mode | Applies to | How it works | Trade-off |
-|------|-----------|-------------|-----------|
-| **API-level** (`run`, `value-run`) | Extraction, Value | Intercepts tool calls at the provider API layer | Fast, provider-agnostic, tests raw LLM capability in isolation |
-| **Containerised** (`bench`) | Extraction only | Runs a real coding agent + real memory system inside Docker | Slow, tests the full stack (agent + system + prompt interactions) |
+| Mode | Currently supports | How it works | What it tests | Trade-off |
+|------|-----------|-------------|--------------|-----------|
+| **API-level** (`run`, `value-run`) | Extraction ✅<br>Value ✅ | Benchmark provides system prompts and tool schemas via Python adapters. Direct LLM API calls. Tool calls are intercepted and recorded, not executed. Success responses are simulated. | Can the LLM correctly use these memory tools? (prompt design, model capability) | Fast iteration, provider-agnostic, no containers required |
+| **Containerised** (`bench`) | Extraction ✅<br>Value ⚠️ (not yet implemented) | Real coding agent (Claude Code) with real memory system (gbrain MCP) installed inside Docker. Agent makes actual tool calls, data is stored for real, then queried afterward. | Does the full agent + memory system stack work together? (integration, real prompts, actual storage) | Slow, Docker required, tests complete deployed stack |
 
-The API-level mode is useful for comparing models and prompt designs quickly. The containerised mode answers "does it actually work end-to-end" — the agent uses the memory system for real, with its own prompt stack, and we query what was stored afterward.
+**Implementation matrix:**
+
+| | Extraction | Value |
+|---|---|---|
+| **API-level** | ✅ `llm-memory-bench run` | ✅ `llm-memory-bench value-run` |
+| **Containerised** | ✅ `llm-memory-bench bench` | ⚠️ Not implemented (could be added) |
+
+**API-level mode** is useful for:
+- Comparing models and prompt designs quickly
+- Isolating LLM capability from integration issues
+- Testing across multiple providers (Anthropic, OpenAI, Vertex)
+
+**Containerised mode** is useful for:
+- Validating that a real agent + memory system works end-to-end
+- Testing with the agent's complete prompt stack (system prompt, CLAUDE.md, plugins)
+- Catching integration issues that API-level testing misses
 
 ## How this differs from AlpsBench
 
@@ -135,9 +150,46 @@ This project uses [AlpsBench](https://huggingface.co/datasets/Cosineyx/Alpsbench
 
 These components are used across benchmark modes.
 
-### Memory systems
+### Two `systems/` directories (different purposes)
 
-Each memory system is a self-contained unit that bundles everything the LLM needs to use it. This is the central design decision — rather than testing with synthetic prompts, each system faithfully reproduces a real memory system's interface.
+This project has two separate `systems/` directories that serve completely different purposes:
+
+**API-level systems** (`src/llm_memory_bench/systems/`):
+- Python classes implementing `MemorySystem` base class
+- Provide prompts and tool schemas for LLM API calls
+- No actual storage, no real MCP servers
+- Fast, isolated testing
+- Used by: `run`, `value-run` commands
+
+**Containerised systems** (`systems/` at project root):
+- Bash scripts: `install.sh`, `query.sh`, `cleanup.sh`
+- Install and configure real memory systems
+- Work with actual MCP servers and storage
+- Integration testing
+- Used by: `bench` command
+
+```
+project root/
+├── src/llm_memory_bench/
+│   └── systems/              ← API-level (Python classes)
+│       ├── base.py
+│       ├── gbrain.py         ← GBrainMemorySystem class
+│       └── simple.py
+│
+└── systems/                  ← Containerised (bash scripts)
+    ├── gbrain/
+    │   ├── install.sh        ← npm install gbrain
+    │   └── query.sh          ← gbrain recall --json
+    └── claude-code-memory/
+```
+
+**You typically use ONE or the OTHER, not both:**
+- Running `llm-memory-bench run --system gbrain` uses `src/.../systems/gbrain.py`
+- Running `llm-memory-bench bench configs/claude-gbrain.yaml` uses `systems/gbrain/`
+
+### Memory systems (API-level)
+
+Each API-level memory system is a self-contained unit that bundles everything the LLM needs to use it. This is the central design decision — rather than testing with synthetic prompts, each system faithfully reproduces a real memory system's interface.
 
 ```
   MemorySystem (ABC)
@@ -510,7 +562,11 @@ Memories can be injected in three modes:
 
 The API-level mode intercepts tool calls at the provider layer — fast iteration, but the LLM never actually uses the memory system. The containerised mode tests the full stack: a real coding agent with a real memory system installed, running inside Docker. There is no tool interception — the agent uses the memory system for real, and we query what was actually stored afterward.
 
-This runs the same extraction benchmark (comparing stored items against ground truth) but through the real agent's complete prompt stack — system prompt, CLAUDE.md, MCP tools, plugins — rather than an isolated API call with a synthetic prompt.
+**Current implementation:** The containerised mode currently runs the extraction benchmark (comparing stored items against ground truth) through the real agent's complete prompt stack — system prompt, CLAUDE.md, MCP tools, plugins — rather than an isolated API call with a synthetic prompt.
+
+**Note:** While containerised mode could theoretically run value benchmarks (seed sessions + task execution in containers), this is not yet implemented. The orchestration code in `bench.py` would need to be extended to support the seed/follow-up protocol used in value benchmarking.
+
+**Key architectural difference:** Containerised mode does NOT use the `MemorySystem` Python adapters from `src/llm_memory_bench/systems/`. Instead, it uses bash scripts from top-level `systems/` to install, query, and cleanup the real memory system. The `bench.py` orchestrator has no dependency on the `MemorySystem` base class. This separation means adding value support wouldn't require changes to the MemorySystem API.
 
 ### Data flow
 
@@ -540,14 +596,14 @@ hosts/
     driver.py           # Feeds conversations via claude-agent-sdk query()
 
 systems/                # Top-level — containerised system definitions
-  gbrain/               # (distinct from src/.../systems/ which are API-level)
-    install.sh          # npm install + claude mcp add
-    cleanup.sh          # Reset stored data between conversations
-    query.sh            # Dump what was stored as JSON
+  gbrain/               # ← DIFFERENT from src/llm_memory_bench/systems/gbrain.py
+    install.sh          # Bash: npm install + claude mcp add
+    cleanup.sh          # Bash: Reset stored data between conversations
+    query.sh            # Bash: gbrain recall --json (dump actual storage)
   claude-code-memory/
-    install.sh          # Configure auto-memory
-    cleanup.sh
-    query.sh
+    install.sh          # Bash: Configure auto-memory
+    cleanup.sh          # Bash: Reset auto-memory state
+    query.sh            # Bash: Dump auto-memory storage
 
 configs/
   claude-gbrain.yaml    # Claude Code + gbrain
@@ -607,12 +663,15 @@ src/llm_memory_bench/
 ├── cli.py                  # Click CLI — all user-facing commands
 ├── config.py               # RunConfig, ValueRunConfig, provider factory
 ├── bench.py                # Containerised benchmark orchestrator (Docker + Agent SDK)
+│                           # NOTE: Does NOT import from systems/ below
 │
 ├── dataset.py              # Extraction benchmark data model (Conversation, Turn, GroundTruth)
 ├── runner.py               # Extraction benchmark runner (conversation replay + tool interception)
 ├── evaluator.py            # Extraction benchmark evaluator (LLM-as-judge fact matching)
 │
-├── systems/                # Memory system definitions (API-level)
+├── systems/                # Memory system definitions (API-level ONLY)
+│                           # Used by: runner.py, evaluator.py, value/runner.py
+│                           # NOT used by: bench.py
 │   ├── base.py             # MemorySystem ABC
 │   ├── simple.py           # Baseline: add_memory(fact, category)
 │   ├── claude_code.py      # Claude Code: save_memory(name, description, type, body)
