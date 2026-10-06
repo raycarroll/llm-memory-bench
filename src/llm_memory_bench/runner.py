@@ -21,6 +21,10 @@ class TurnResult:
     input_tokens: int = 0
     output_tokens: int = 0
     latency_ms: float = 0
+    response_text: str = ""  # Assistant's text response
+    metadata: dict = field(default_factory=dict)  # Provider metadata (e.g., actual_model)
+    errors: list[str] = field(default_factory=list)  # API errors, warnings, or exceptions
+    warnings: list[str] = field(default_factory=list)  # Non-fatal warnings
 
 
 @dataclass
@@ -42,6 +46,146 @@ class RunResult:
     config: RunConfig
     conversation_results: list[ConversationResult] = field(default_factory=list)
     total_time_ms: float = 0
+    stop_reason: str | None = None
+    preflight_input_tokens: int = 0
+    preflight_output_tokens: int = 0
+    actual_model: str | None = None  # Model actually used by provider (may differ from config)
+
+
+@dataclass
+class UsageBudget:
+    model: str
+    max_total_tokens: int | None = None
+    max_cost_usd: float | None = None
+    input_tokens: int = 0
+    output_tokens: int = 0
+    stopped: bool = False
+
+    def record(self, input_tokens: int, output_tokens: int) -> None:
+        self.input_tokens += input_tokens
+        self.output_tokens += output_tokens
+        total = self.input_tokens + self.output_tokens
+        if self.max_total_tokens is not None and total >= self.max_total_tokens:
+            self.stopped = True
+        if self.max_cost_usd is not None:
+            from .pricing import estimate_cost
+            cost = estimate_cost(self.model, self.input_tokens, self.output_tokens)
+            if cost is not None and cost >= self.max_cost_usd:
+                self.stopped = True
+
+
+async def run_batch_conversation(
+    conversation: Conversation,
+    provider,
+    system_prompt: str,
+    budget: UsageBudget | None = None,
+) -> ConversationResult:
+    """Run batch extraction (AlpsBench-style).
+
+    Sends entire conversation as JSON in single API call.
+    Model returns JSON (not tool calls).
+    """
+    import json
+    from rich.live import Live
+
+    result = ConversationResult(conversation_id=conversation.id)
+
+    # Build dialogue JSON (AlpsBench format)
+    dialogue = []
+    for turn in conversation.turns:
+        dialogue.append({
+            "role": turn.role,
+            "text": turn.content
+        })
+
+    dialogue_json = json.dumps({"dialogue": dialogue}, ensure_ascii=False)
+
+    with Live("", console=console, refresh_per_second=4, transient=True) as live:
+        live.update("[dim]batch extraction...[/dim]")
+
+        start = time.monotonic()
+        response = await provider.generate(
+            messages=[{"role": "user", "content": dialogue_json}],
+            tools=[],  # No tools - just JSON response
+            system=system_prompt,
+        )
+        latency = (time.monotonic() - start) * 1000
+
+        live.update(f"[dim]batch extraction ({latency:.0f}ms)[/dim]")
+
+        # Parse JSON response to extract memories
+        errors = []
+        warnings = []
+        tool_calls = []
+        memory_items = []
+
+        try:
+            # Remove markdown code blocks if present
+            text = response.text.strip()
+            if text.startswith("```"):
+                lines = text.split("\n")
+                if lines[0].lower() in ["```", "```json"]:
+                    text = "\n".join(lines[1:-1]) if lines[-1] == "```" else "\n".join(lines[1:])
+
+            memories_data = json.loads(text)
+            if not isinstance(memories_data, dict):
+                raise ValueError(f"Expected dict, got {type(memories_data).__name__}")
+
+            memory_items = memories_data.get("memory_items", [])
+
+            # Convert each memory item to a separate tool call for evaluation
+            # This matches our normal evaluation flow (one fact per tool call)
+            from .providers.base import ToolCall
+            tool_calls = []
+            for item in memory_items:
+                if isinstance(item, dict):
+                    # Create a tool call for each memory item
+                    # Use the "value" field as the stored fact
+                    tool_calls.append(
+                        ToolCall(
+                            name="batch_memory_item",
+                            arguments=item  # Store full item (type, label, value, etc.)
+                        )
+                    )
+        except (json.JSONDecodeError, ValueError, AttributeError) as e:
+            error_msg = f"JSON parsing failed: {e}"
+            errors.append(error_msg)
+            console.print(f"[yellow]Warning: Failed to parse JSON response for {conversation.id}[/yellow]")
+            console.print(f"[yellow]  Error: {e}[/yellow]")
+            console.print(f"[yellow]  Response preview: {response.text[:200]}...[/yellow]")
+
+            # Save raw response for debugging
+            import os
+            debug_dir = "results/debug"
+            os.makedirs(debug_dir, exist_ok=True)
+            debug_path = f"{debug_dir}/failed_json_{conversation.id}.txt"
+            with open(debug_path, "w") as f:
+                f.write(response.text)
+            console.print(f"[yellow]  Saved raw response to {debug_path}[/yellow]")
+
+        # Record as a single turn at the end of conversation
+        turn_result = TurnResult(
+            turn_index=len(conversation.turns) - 1,
+            role="batch",
+            tool_calls=tool_calls,
+            input_tokens=response.input_tokens,
+            output_tokens=response.output_tokens,
+            latency_ms=latency,
+            response_text=response.text,
+            errors=errors,
+            warnings=warnings,
+        )
+        result.turn_results.append(turn_result)
+
+        if budget:
+            budget.record(response.input_tokens, response.output_tokens)
+
+    console.print(
+        f"    done — {len(memory_items)} memories extracted, "
+        f"{response.input_tokens + response.output_tokens} tokens",
+        style="dim",
+    )
+    return result
 
 
 async def run_conversation(
@@ -50,6 +194,7 @@ async def run_conversation(
     system_prompt: str,
     tools: list[dict],
     format_tool_result,
+    budget: UsageBudget | None = None,
 ) -> ConversationResult:
     from rich.live import Live
 
@@ -91,8 +236,11 @@ async def run_conversation(
                 input_tokens=response.input_tokens,
                 output_tokens=response.output_tokens,
                 latency_ms=latency,
+                response_text=response.text,
             )
             result.turn_results.append(turn_result)
+            if budget:
+                budget.record(response.input_tokens, response.output_tokens)
 
             if response.tool_calls:
                 tool_msgs = provider.build_tool_result_messages(
@@ -101,6 +249,9 @@ async def run_conversation(
                 messages.extend(tool_msgs)
             else:
                 messages.append({"role": "assistant", "content": response.text})
+
+            if budget and budget.stopped:
+                break
 
     total_calls = result.total_tool_calls
     console.print(
@@ -119,6 +270,7 @@ async def run_conversation_sequential(
     format_tool_result,
     memory_state: dict,  # Accumulated memory across conversations
     memory_system,
+    budget: UsageBudget | None = None,
 ) -> ConversationResult:
     """Run a conversation with access to accumulated memory state."""
     from rich.live import Live
@@ -171,8 +323,11 @@ async def run_conversation_sequential(
                 input_tokens=response.input_tokens,
                 output_tokens=response.output_tokens,
                 latency_ms=latency,
+                response_text=response.text,
             )
             result.turn_results.append(turn_result)
+            if budget:
+                budget.record(response.input_tokens, response.output_tokens)
 
             # Update memory state from tool calls
             if response.tool_calls:
@@ -185,6 +340,9 @@ async def run_conversation_sequential(
                 messages.extend(tool_msgs)
             else:
                 messages.append({"role": "assistant", "content": response.text})
+
+            if budget and budget.stopped:
+                break
 
     total_calls = result.total_tool_calls
     console.print(
@@ -251,6 +409,7 @@ def _update_memory_state(memory_state: dict, tool_call: ToolCall, memory_system)
 
 async def run_benchmark(dataset: Dataset, config: RunConfig) -> RunResult:
     # Validate max_conversations compatibility with dataset type EARLY
+    # Detect if we need sequential mode (dataset-level cumulative ground truth)
     from .dataset import GroundTruthType
     if config.max_conversations:
         if (dataset.ground_truth_type == GroundTruthType.CUMULATIVE
@@ -272,18 +431,41 @@ async def run_benchmark(dataset: Dataset, config: RunConfig) -> RunResult:
     system_prompt = memory_system.system_prompt()
     tools = memory_system.tool_definitions()
 
-    console.print("Verifying provider credentials...", style="dim")
-    await provider.preflight()
-    console.print("Provider OK.", style="dim")
-
     conversations = dataset.conversations
     if config.max_conversations:
         conversations = conversations[: config.max_conversations]
 
+    budget = UsageBudget(
+        model=config.model,
+        max_total_tokens=config.max_total_tokens,
+        max_cost_usd=config.max_cost_usd,
+    )
+    console.print("Verifying provider credentials...", style="dim")
+    preflight_response = await provider.preflight()
+    budget.record(preflight_response.input_tokens, preflight_response.output_tokens)
+
+    # Log actual model used (may differ from requested if alias/fallback)
+    actual_model = preflight_response.metadata.get("actual_model")
+    if actual_model and actual_model != config.model:
+        console.print(
+            f"[yellow]Warning: Provider is using model '{actual_model}' "
+            f"(requested '{config.model}')[/yellow]"
+        )
+    elif actual_model:
+        console.print(f"Using model: {actual_model}", style="dim")
+
+    console.print("Provider OK.", style="dim")
+
     run_result = RunResult(config=config)
+    run_result.preflight_input_tokens = preflight_response.input_tokens
+    run_result.preflight_output_tokens = preflight_response.output_tokens
+    run_result.actual_model = preflight_response.metadata.get("actual_model")
     start = time.monotonic()
 
-    # Detect if we need sequential mode (dataset-level cumulative ground truth)
+    if budget.stopped:
+        run_result.stop_reason = "Budget reached during provider preflight"
+        return run_result
+
     from .dataset import GroundTruthType
     is_sequential = (
         dataset.ground_truth_type == GroundTruthType.CUMULATIVE
@@ -308,24 +490,49 @@ async def run_benchmark(dataset: Dataset, config: RunConfig) -> RunResult:
                 format_tool_result=memory_system.format_tool_result,
                 memory_state=memory_state,
                 memory_system=memory_system,
+                budget=budget,
             )
             run_result.conversation_results.append(conv_result)
+            if budget.stopped:
+                break
     else:
         # Independent mode: each conversation is isolated
         for i, conversation in enumerate(conversations):
             console.print(
                 f"  [{i+1}/{len(conversations)}] {conversation.id} "
-                f"({len(conversation.turns)} turns)",
+                f"({len(conversation.turns)} turns)"
+                f"{' [dim][batch mode][/dim]' if config.batch else ''}",
                 style="dim",
             )
-            conv_result = await run_conversation(
-                conversation,
-                provider,
-                system_prompt,
-                tools,
-                format_tool_result=memory_system.format_tool_result,
-            )
+
+            if config.batch:
+                # Batch extraction mode (AlpsBench-style)
+                conv_result = await run_batch_conversation(
+                    conversation,
+                    provider,
+                    system_prompt,
+                    budget=budget,
+                )
+            else:
+                # Turn-by-turn mode (standard)
+                conv_result = await run_conversation(
+                    conversation,
+                    provider,
+                    system_prompt,
+                    tools,
+                    format_tool_result=memory_system.format_tool_result,
+                    budget=budget,
+                )
             run_result.conversation_results.append(conv_result)
+            if budget.stopped:
+                break
 
     run_result.total_time_ms = (time.monotonic() - start) * 1000
+    if budget.stopped:
+        limits = []
+        if config.max_total_tokens is not None:
+            limits.append(f"{config.max_total_tokens:,} tokens")
+        if config.max_cost_usd is not None:
+            limits.append(f"${config.max_cost_usd:.4f}")
+        run_result.stop_reason = f"Budget reached ({' or '.join(limits)})"
     return run_result
