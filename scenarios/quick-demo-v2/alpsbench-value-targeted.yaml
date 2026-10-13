@@ -1,0 +1,445 @@
+scenarios:
+- id: sess_088e73a8342a_location_0
+  memory_bank:
+  - &id001
+    category: direct
+    fact: Based in Chongqing, China
+  noise_memories: []
+  persona_prompt: ''
+  quality_rubric: '- Suggests specific local places?
+
+    - Relevant to their city/neighborhood
+
+    - Not generic chains'
+  task_prompt: Where should I go for coffee this afternoon?
+  value_category: location
+- id: sess_088e73a8342a_location_1
+  memory_bank:
+  - *id001
+  noise_memories: []
+  persona_prompt: ''
+  quality_rubric: '- Location-appropriate suggestions?
+
+    - Considers local climate/culture
+
+    - Specific venues/places'
+  task_prompt: Weekend activity ideas
+  value_category: location
+- id: sess_0bd475cf8841_location_0
+  memory_bank:
+  - &id002
+    category: indirect
+    fact: Resides in waterfront villa on Long Island's North Shore
+  noise_memories: []
+  persona_prompt: ''
+  quality_rubric: '- Suggests specific local places?
+
+    - Relevant to their city/neighborhood
+
+    - Not generic chains'
+  task_prompt: Where should I go for coffee this afternoon?
+  value_category: location
+- id: sess_0bd475cf8841_location_1
+  memory_bank:
+  - *id002
+  noise_memories: []
+  persona_prompt: ''
+  quality_rubric: '- Location-appropriate suggestions?
+
+    - Considers local climate/culture
+
+    - Specific venues/places'
+  task_prompt: Weekend activity ideas
+  value_category: location
+- id: sess_1117e6bff54b_location_0
+  memory_bank:
+  - &id003
+    category: indirect
+    fact: Likely based in Ukraine (references to military context and nationwide production networks)
+  noise_memories: []
+  persona_prompt: ''
+  quality_rubric: '- Suggests specific local places?
+
+    - Relevant to their city/neighborhood
+
+    - Not generic chains'
+  task_prompt: Where should I go for coffee this afternoon?
+  value_category: location
+- id: sess_1117e6bff54b_location_1
+  memory_bank:
+  - *id003
+  noise_memories: []
+  persona_prompt: ''
+  quality_rubric: '- Location-appropriate suggestions?
+
+    - Considers local climate/culture
+
+    - Specific venues/places'
+  task_prompt: Weekend activity ideas
+  value_category: location
+- id: sess_337dd6d22242_dietary_0
+  memory_bank:
+  - &id004
+    category: direct
+    fact: Gluten-free diet
+  noise_memories: []
+  persona_prompt: ''
+  quality_rubric: '- Does response respect dietary restrictions?
+
+    - Is recipe specific and actionable?
+
+    - No questions about diet when memory available'
+  task_prompt: What should I make for dinner tonight?
+  value_category: dietary
+- id: sess_337dd6d22242_dietary_1
+  memory_bank:
+  - *id004
+  noise_memories: []
+  persona_prompt: ''
+  quality_rubric: '- Suggests places with appropriate options?
+
+    - Specific recommendations vs generic
+
+    - No asking about dietary needs'
+  task_prompt: Recommend a restaurant for lunch
+  value_category: dietary
+- id: sess_337dd6d22242_dietary_2
+  memory_bank:
+  - *id004
+  noise_memories: []
+  persona_prompt: ''
+  quality_rubric: '- All suggestions align with diet?
+
+    - Practical and specific
+
+    - Doesn''t ask about preferences'
+  task_prompt: Quick meal ideas for this week
+  value_category: dietary
+- id: sess_427264d5caa6_location_0
+  memory_bank:
+  - &id005
+    category: direct
+    fact: 'Name: Maryam Karimian, 35 years old, salesperson, lives in Shiraz, Iran (born in Ahvaz), married for 5 years'
+  noise_memories: []
+  persona_prompt: ''
+  quality_rubric: '- Suggests specific local places?
+
+    - Relevant to their city/neighborhood
+
+    - Not generic chains'
+  task_prompt: Where should I go for coffee this afternoon?
+  value_category: location
+- id: sess_427264d5caa6_location_1
+  memory_bank:
+  - *id005
+  noise_memories: []
+  persona_prompt: ''
+  quality_rubric: '- Location-appropriate suggestions?
+
+    - Considers local climate/culture
+
+    - Specific venues/places'
+  task_prompt: Weekend activity ideas
+  value_category: location
+- id: sess_4521a3b53d4a_constraint_0
+  memory_bank:
+  - &id006
+    category: direct
+    fact: Daily budget of 60-90 EUR excluding accommodations
+  noise_memories: []
+  persona_prompt: ''
+  quality_rubric: '- Stays within budget constraint?
+
+    - Specific models within limits
+
+    - No asking about budget'
+  task_prompt: Recommend a laptop for work
+  value_category: constraint
+- id: sess_4521a3b53d4a_constraint_1
+  memory_bank:
+  - *id006
+  noise_memories: []
+  persona_prompt: ''
+  quality_rubric: '- All suggestions respect constraints?
+
+    - Actionable within limits
+
+    - Doesn''t ask for budget/time'
+  task_prompt: Gift ideas for a colleague
+  value_category: constraint
+- id: sess_4982f3cbd223_constraint_0
+  memory_bank:
+  - &id007
+    category: indirect
+    fact: Sustained interest in evaluating and comparing AWD EV sedans with high range under $65,000
+  noise_memories: []
+  persona_prompt: ''
+  quality_rubric: '- Stays within budget constraint?
+
+    - Specific models within limits
+
+    - No asking about budget'
+  task_prompt: Recommend a laptop for work
+  value_category: constraint
+- id: sess_4982f3cbd223_constraint_1
+  memory_bank:
+  - *id007
+  noise_memories: []
+  persona_prompt: ''
+  quality_rubric: '- All suggestions respect constraints?
+
+    - Actionable within limits
+
+    - Doesn''t ask for budget/time'
+  task_prompt: Gift ideas for a colleague
+  value_category: constraint
+- id: sess_52fa66660635_location_0
+  memory_bank:
+  - &id008
+    category: indirect
+    fact: Likely resides in Pacific Time Zone (references San Diego/Los Angeles and uses 'our hours')
+  noise_memories: []
+  persona_prompt: ''
+  quality_rubric: '- Suggests specific local places?
+
+    - Relevant to their city/neighborhood
+
+    - Not generic chains'
+  task_prompt: Where should I go for coffee this afternoon?
+  value_category: location
+- id: sess_52fa66660635_location_1
+  memory_bank:
+  - *id008
+  noise_memories: []
+  persona_prompt: ''
+  quality_rubric: '- Location-appropriate suggestions?
+
+    - Considers local climate/culture
+
+    - Specific venues/places'
+  task_prompt: Weekend activity ideas
+  value_category: location
+- id: sess_7313d24185a1_location_0
+  memory_bank:
+  - &id009
+    category: indirect
+    fact: Likely located in Saudi Arabia
+  noise_memories: []
+  persona_prompt: ''
+  quality_rubric: '- Suggests specific local places?
+
+    - Relevant to their city/neighborhood
+
+    - Not generic chains'
+  task_prompt: Where should I go for coffee this afternoon?
+  value_category: location
+- id: sess_7313d24185a1_location_1
+  memory_bank:
+  - *id009
+  noise_memories: []
+  persona_prompt: ''
+  quality_rubric: '- Location-appropriate suggestions?
+
+    - Considers local climate/culture
+
+    - Specific venues/places'
+  task_prompt: Weekend activity ideas
+  value_category: location
+- id: sess_7bc712dbd2be_location_0
+  memory_bank:
+  - &id010
+    category: direct
+    fact: Freelance Online English Tutor based in Jeddah
+  - &id011
+    category: direct
+    fact: Resides in Jeddah, Saudi Arabia
+  noise_memories: []
+  persona_prompt: ''
+  quality_rubric: '- Suggests specific local places?
+
+    - Relevant to their city/neighborhood
+
+    - Not generic chains'
+  task_prompt: Where should I go for coffee this afternoon?
+  value_category: location
+- id: sess_7bc712dbd2be_location_1
+  memory_bank:
+  - *id010
+  - *id011
+  noise_memories: []
+  persona_prompt: ''
+  quality_rubric: '- Location-appropriate suggestions?
+
+    - Considers local climate/culture
+
+    - Specific venues/places'
+  task_prompt: Weekend activity ideas
+  value_category: location
+- id: sess_86dd3aa9072c_language_pref_0
+  memory_bank:
+  - &id012
+    category: indirect
+    fact: Prefers Java programming language for technical implementations
+  noise_memories: []
+  persona_prompt: ''
+  quality_rubric: '- Uses preferred language?
+
+    - Idioms appropriate to that language
+
+    - No asking about language choice'
+  task_prompt: Write a script to process CSV files
+  value_category: language_pref
+- id: sess_86dd3aa9072c_language_pref_1
+  memory_bank:
+  - *id012
+  noise_memories: []
+  persona_prompt: ''
+  quality_rubric: '- Code in preferred language?
+
+    - Uses standard libraries for that ecosystem
+
+    - Specific not generic'
+  task_prompt: Quick example of reading environment variables
+  value_category: language_pref
+- id: sess_c25c5d5bfe43_location_0
+  memory_bank:
+  - &id013
+    category: direct
+    fact: Lives in different city from mother
+  noise_memories: []
+  persona_prompt: ''
+  quality_rubric: '- Suggests specific local places?
+
+    - Relevant to their city/neighborhood
+
+    - Not generic chains'
+  task_prompt: Where should I go for coffee this afternoon?
+  value_category: location
+- id: sess_c25c5d5bfe43_location_1
+  memory_bank:
+  - *id013
+  noise_memories: []
+  persona_prompt: ''
+  quality_rubric: '- Location-appropriate suggestions?
+
+    - Considers local climate/culture
+
+    - Specific venues/places'
+  task_prompt: Weekend activity ideas
+  value_category: location
+- id: sess_e8d5145b99f2_location_0
+  memory_bank:
+  - &id014
+    category: direct
+    fact: Based in China
+  noise_memories: []
+  persona_prompt: ''
+  quality_rubric: '- Suggests specific local places?
+
+    - Relevant to their city/neighborhood
+
+    - Not generic chains'
+  task_prompt: Where should I go for coffee this afternoon?
+  value_category: location
+- id: sess_e8d5145b99f2_location_1
+  memory_bank:
+  - *id014
+  noise_memories: []
+  persona_prompt: ''
+  quality_rubric: '- Location-appropriate suggestions?
+
+    - Considers local climate/culture
+
+    - Specific venues/places'
+  task_prompt: Weekend activity ideas
+  value_category: location
+- id: sess_f246224d3c1f_location_0
+  memory_bank:
+  - &id015
+    category: indirect
+    fact: Curious about cultural/country/race-based infidelity statistics
+  noise_memories: []
+  persona_prompt: ''
+  quality_rubric: '- Suggests specific local places?
+
+    - Relevant to their city/neighborhood
+
+    - Not generic chains'
+  task_prompt: Where should I go for coffee this afternoon?
+  value_category: location
+- id: sess_f246224d3c1f_location_1
+  memory_bank:
+  - *id015
+  noise_memories: []
+  persona_prompt: ''
+  quality_rubric: '- Location-appropriate suggestions?
+
+    - Considers local climate/culture
+
+    - Specific venues/places'
+  task_prompt: Weekend activity ideas
+  value_category: location
+- id: sess_f7c1cc55bc5c_skill_0
+  memory_bank:
+  - &id016
+    category: direct
+    fact: Aims to promote collaborative research in complex networks and software engineering
+  noise_memories: []
+  persona_prompt: ''
+  quality_rubric: '- Appropriate complexity for skill level?
+
+    - Uses right language/tools for background
+
+    - No asking about language preference or skill level'
+  task_prompt: Help me write a function to validate JSON data
+  value_category: skill
+- id: sess_f7c1cc55bc5c_skill_1
+  memory_bank:
+  - *id016
+  noise_memories: []
+  persona_prompt: ''
+  quality_rubric: '- Explanation depth matches skill level?
+
+    - Examples appropriate for background
+
+    - Not over-explained or under-explained'
+  task_prompt: Explain how async/await works
+  value_category: skill
+- id: sess_f7c1cc55bc5c_skill_2
+  memory_bank:
+  - *id016
+  noise_memories: []
+  persona_prompt: ''
+  quality_rubric: '- Feedback appropriate for skill level?
+
+    - References relevant to their stack
+
+    - Specific actionable advice'
+  task_prompt: Review this code for best practices
+  value_category: skill
+- id: sess_fd0881fab633_location_0
+  memory_bank:
+  - &id017
+    category: direct
+    fact: Resides in a region with 8-10x more illegally distributed anime than legal releases
+  noise_memories: []
+  persona_prompt: ''
+  quality_rubric: '- Suggests specific local places?
+
+    - Relevant to their city/neighborhood
+
+    - Not generic chains'
+  task_prompt: Where should I go for coffee this afternoon?
+  value_category: location
+- id: sess_fd0881fab633_location_1
+  memory_bank:
+  - *id017
+  noise_memories: []
+  persona_prompt: ''
+  quality_rubric: '- Location-appropriate suggestions?
+
+    - Considers local climate/culture
+
+    - Specific venues/places'
+  task_prompt: Weekend activity ideas
+  value_category: location

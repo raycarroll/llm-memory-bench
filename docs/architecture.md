@@ -564,7 +564,13 @@ The API-level mode intercepts tool calls at the provider layer — fast iteratio
 
 **Current implementation:** The containerised mode currently runs the extraction benchmark (comparing stored items against ground truth) through the real agent's complete prompt stack — system prompt, CLAUDE.md, MCP tools, plugins — rather than an isolated API call with a synthetic prompt.
 
-**Note:** While containerised mode could theoretically run value benchmarks (seed sessions + task execution in containers), this is not yet implemented. The orchestration code in `bench.py` would need to be extended to support the seed/follow-up protocol used in value benchmarking.
+Containerised value runs are implemented for the versioned Claude Code +
+MemoryHub profile through `llm-memory-bench container-value-run`. Each scenario
+gets a baseline container with no memory integration and a separate integrated
+container. The scenario memory bank is seeded into the existing MemoryHub
+service before the integrated trial, then the task is driven through the real
+Claude Agent SDK session. The value evaluator remains shared with API-level
+runs, but the execution path does not use the Python `MemorySystem` adapters.
 
 **Key architectural difference:** Containerised mode does NOT use the `MemorySystem` Python adapters from `src/llm_memory_bench/systems/`. Instead, it uses bash scripts from top-level `systems/` to install, query, and cleanup the real memory system. The `bench.py` orchestrator has no dependency on the `MemorySystem` base class. This separation means adding value support wouldn't require changes to the MemorySystem API.
 

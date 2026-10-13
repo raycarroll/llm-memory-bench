@@ -11,10 +11,13 @@ from .base import LLMProvider, ProviderError, ProviderResponse, ToolCall
 class OpenAIProvider(LLMProvider):
     def __init__(self, model: str = "gpt-4o", **kwargs):
         super().__init__(model, **kwargs)
-        api_key_env = kwargs.get("api_key_env")
-        api_key = os.environ.get(api_key_env) if api_key_env else None
+        api_key_env = kwargs.get("api_key_env") or "OPENAI_API_KEY"
+        api_key = os.environ.get(api_key_env)
         try:
-            self.client = openai.AsyncOpenAI(api_key=api_key)
+            # Omitting api_key lets the SDK resolve its standard environment
+            # variable. Passing None explicitly makes the SDK reject a valid
+            # OPENAI_API_KEY in the process environment.
+            self.client = openai.AsyncOpenAI(api_key=api_key) if api_key else openai.AsyncOpenAI()
         except Exception as e:
             raise ProviderError(self._auth_hint()) from e
 
@@ -38,6 +41,11 @@ class OpenAIProvider(LLMProvider):
             for tool in tools
         ]
 
+    def _is_reasoning_model(self) -> bool:
+        """Check if model is a reasoning model (o1/o3/luna series)."""
+        model_lower = self.model.lower()
+        return any(x in model_lower for x in ["o1", "o3", "luna", "reasoning"])
+
     async def generate(
         self,
         messages: list[dict],
@@ -48,16 +56,46 @@ class OpenAIProvider(LLMProvider):
         api_messages.extend(messages)
 
         try:
+            # Increase token limit for batch extraction (no tools = JSON output)
+            max_tokens = 4096 if not tools else 1024
+
             kwargs = dict(
                 model=self.model,
                 messages=api_messages,
-                max_tokens=1024,
+                max_completion_tokens=max_tokens,
             )
+
+            # Reasoning models require reasoning_effort='none' with tools in /v1/chat/completions
+            # or use /v1/responses endpoint (not yet in SDK)
+            if self._is_reasoning_model() and tools:
+                kwargs["reasoning_effort"] = "none"
+
             if tools:
                 kwargs["tools"] = self._to_openai_tools(tools)
+
+            # Debug: log the actual request size
+            import json
+            import os
+            if os.getenv("DEBUG_TOKENS"):
+                print(f"\n[OpenAI Request Debug]")
+                print(f"  Messages: {len(api_messages)}")
+                print(f"  Tools: {len(tools) if tools else 0}")
+                print(f"  System length: {len(system)} chars")
+                print(f"  Request JSON size: {len(json.dumps(kwargs, default=str))} chars")
+
             response = await self.client.chat.completions.create(**kwargs)
         except Exception as e:
             raise ProviderError(self._friendly_error(e)) from e
+
+        # Warn if API returned a different model than requested
+        actual_model = response.model
+        if actual_model != self.model:
+            import warnings
+            warnings.warn(
+                f"OpenAI API returned model '{actual_model}' but '{self.model}' was requested. "
+                f"This may indicate an invalid model name or API fallback behavior.",
+                stacklevel=2
+            )
 
         choice = response.choices[0]
         text = choice.message.content or ""
@@ -77,6 +115,7 @@ class OpenAIProvider(LLMProvider):
             tool_calls=tool_calls,
             input_tokens=response.usage.prompt_tokens if response.usage else 0,
             output_tokens=response.usage.completion_tokens if response.usage else 0,
+            metadata={"actual_model": actual_model},  # Track what model was actually used
         )
 
     def build_tool_result_messages(

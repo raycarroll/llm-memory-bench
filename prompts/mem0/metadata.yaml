@@ -1,0 +1,6 @@
+default_version: v1_2026-10
+versions:
+  - v1_2026-10
+description: |
+  Mem0 memory extraction for personal facts and preferences.
+  Based on Mem0's agent plugin core instructions.

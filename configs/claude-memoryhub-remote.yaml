@@ -1,0 +1,25 @@
+host:
+  name: claude-code
+  version: "2.1.294"
+
+integration:
+  profile: integrations/profiles/memoryhub/remote-http-v1/profile.yaml
+  platform: claude-code
+  env:
+    CLAUDE_CODE_USE_VERTEX: "1"
+    LLM_MEMORY_BENCH_CAPTURE_HOOK_OUTPUT: "1"
+    MEMORYHUB_URL: "${MEMORYHUB_URL:-http://host.docker.internal:18080/mcp/}"
+    MEMORYHUB_SEED_URL: "${MEMORYHUB_SEED_URL:-http://localhost:18080/mcp/}"
+    MEMORYHUB_API_KEY: "${MEMORYHUB_API_KEY}"
+
+model: claude-sonnet-4-5@20250929
+
+# Set true to retain benchmark containers for Podman/Docker inspection after a run.
+container:
+  keep_alive: true
+
+dataset: datasets/converted/task1.jsonl
+
+# The remote profile currently declares reset unsupported. Use one isolated
+# conversation until a provider-side reset/cleanup adapter is available.
+max_conversations: 1

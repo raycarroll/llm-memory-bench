@@ -5,13 +5,33 @@ from dataclasses import dataclass, field
 import jsonschema
 
 from .config import RunConfig, get_provider
-from .dataset import Conversation, Dataset, GroundTruthType
+from .dataset import Conversation, Dataset, ExpectedFact, GroundTruthType
 from .matchers.base import FactMatcher, MatchVerdict
 from .matchers.llm import LLMMatcher
 from .providers.base import ToolCall
 from .runner import ConversationResult, RunResult
 from .systems import get_system
 from .systems.base import MemorySystem
+
+
+def _to_matcher_input(expected: ExpectedFact) -> str | dict:
+    """Convert ExpectedFact to matcher input format.
+
+    For AlpsBench facts (with label field), returns full dict for tuple matching.
+    For legacy facts, returns just the fact string.
+    """
+    # Check if this is an AlpsBench fact (has label field)
+    if expected.label is not None:
+        return {
+            "fact": expected.fact,
+            "label": expected.label,
+            "type": expected.type.value,
+            "preference_attitude": expected.preference_attitude,
+            "time_scope": expected.time_scope,
+            "emotion": expected.emotion,
+        }
+    # Legacy format: just the fact string
+    return expected.fact
 
 
 @dataclass
@@ -29,6 +49,7 @@ class FactMatch:
     matched_tool_call: ToolCall | None
     verdict: MatchVerdict
     candidates: list[MatchCandidate] = field(default_factory=list)  # Top ranked matches
+    pair_score: float | None = None  # AlpsBench pair score for matched pairs
 
     def to_dict(self) -> dict:
         d = {
@@ -41,6 +62,8 @@ class FactMatch:
                 "name": self.matched_tool_call.name,
                 "arguments": self.matched_tool_call.arguments,
             }
+        if self.pair_score is not None:
+            d["pair_score"] = round(self.pair_score, 4)
         # Include top candidates with scores for debugging
         if self.candidates:
             d["top_candidates"] = [
@@ -197,9 +220,24 @@ class EvaluationResult:
             total_schema_valid / total_calls if total_calls > 0 else 1.0
         )
 
+        # AlpsBench avg_pair_score: mean of matched pair scores only
+        pair_scores = []
+        for ce in self.conversation_evaluations:
+            for te in ce.turn_evaluations:
+                for fm in te.fact_matches:
+                    # Only include matched pairs (MATCH or PARTIAL)
+                    if fm.verdict != MatchVerdict.NO_MATCH and fm.pair_score is not None:
+                        pair_scores.append(fm.pair_score)
+
+        avg_pair_score = sum(pair_scores) / len(pair_scores) if pair_scores else 0.0
+
+        # AlpsBench blended score: 60% quality + 40% coverage
+        # algo_score_100 = 100 * (0.60 * avg_pair_score + 0.40 * F1)
+        alpsbench_score = 0.60 * avg_pair_score + 0.40 * f1 if pair_scores else None
+
         # Prefix metrics based on dataset type
         if dataset_type == GroundTruthType.PER_TURN:
-            return {
+            metrics_dict = {
                 "per_turn_extraction_precision": round(precision, 4),
                 "per_turn_extraction_recall": round(recall, 4),
                 "per_turn_extraction_f1": round(f1, 4),
@@ -212,8 +250,14 @@ class EvaluationResult:
                 "noise_violations": noise_violations,
                 "total_tool_calls": total_calls,
             }
+            # Add AlpsBench metrics if available
+            if alpsbench_score is not None:
+                metrics_dict["alpsbench_avg_pair_score"] = round(avg_pair_score, 4)
+                metrics_dict["alpsbench_blended_score"] = round(alpsbench_score, 4)
+                metrics_dict["alpsbench_matched_pairs"] = len(pair_scores)
+            return metrics_dict
         else:  # CUMULATIVE
-            return {
+            metrics_dict = {
                 "cumulative_extraction_precision": round(precision, 4),
                 "cumulative_extraction_recall": round(recall, 4),
                 "cumulative_extraction_f1": round(f1, 4),
@@ -224,6 +268,12 @@ class EvaluationResult:
                 "false_positives": fp,
                 "total_tool_calls": total_calls,
             }
+            # Add AlpsBench metrics if available
+            if alpsbench_score is not None:
+                metrics_dict["alpsbench_avg_pair_score"] = round(avg_pair_score, 4)
+                metrics_dict["alpsbench_blended_score"] = round(alpsbench_score, 4)
+                metrics_dict["alpsbench_matched_pairs"] = len(pair_scores)
+            return metrics_dict
 
     def metrics_by_fact_type(self) -> dict[str, dict]:
         by_type: dict[str, dict[str, float]] = {}
@@ -277,7 +327,13 @@ async def evaluate_conversation_per_turn(
 
     for i, turn in enumerate(conversation.turns):
         tr = turn_result_map.get(i)
-        tool_calls = tr.tool_calls if tr else []
+        all_tool_calls = tr.tool_calls if tr else []
+
+        # Filter to only storage tool calls (ignore search/retrieval)
+        tool_calls = [
+            tc for tc in all_tool_calls
+            if memory_system.extract_stored_fact(tc)
+        ]
 
         expected_facts = turn.ground_truth.should_store
         is_noise = turn.is_noise
@@ -303,16 +359,22 @@ async def evaluate_conversation_per_turn(
 
             # For embedding matcher, use similarity scores for tiebreaking
             from .matchers.embedding import EmbeddingMatcher
+            from .matchers.alpsbench import AlpsBenchMatcher
             use_similarity_scores = isinstance(matcher, EmbeddingMatcher)
+            use_alpsbench_scores = isinstance(matcher, AlpsBenchMatcher)
 
             for ef in expected_facts:
                 best_verdict = MatchVerdict.NO_MATCH
                 best_tc = None
                 best_j = None
                 best_similarity = -1.0
+                best_pair_score: float | None = None
 
                 # Collect all candidates with scores
                 all_candidates: list[tuple[int, ToolCall, float, MatchVerdict]] = []
+
+                # Convert expected fact to matcher input format
+                expected_input = _to_matcher_input(ef)
 
                 for j, tc in enumerate(tool_calls):
                     if j in matched_calls:
@@ -320,13 +382,21 @@ async def evaluate_conversation_per_turn(
                     stored = memory_system.extract_stored_fact(tc)
                     if not stored:
                         continue
-                    verdict = await matcher.match(ef.fact, stored)
+                    verdict = await matcher.match(expected_input, stored)
 
-                    # For embedding matcher, get actual similarity score
+                    # Get similarity/pair score based on matcher type
                     similarity = -1.0
                     if use_similarity_scores:
-                        embeddings = matcher.model.encode([ef.fact, stored], normalize_embeddings=True)
+                        # Embedding matcher needs strings, not dicts
+                        expected_str = ef.fact if isinstance(expected_input, dict) else expected_input
+                        stored_str = stored.get("value") if isinstance(stored, dict) else stored
+                        embeddings = matcher.model.encode([expected_str, stored_str], normalize_embeddings=True)
                         similarity = float(embeddings[0] @ embeddings[1])
+                    elif use_alpsbench_scores:
+                        # Get AlpsBench pair score for this match
+                        pair_sc = matcher.get_last_pair_score()
+                        if pair_sc is not None:
+                            similarity = pair_sc
 
                     # Store this candidate
                     all_candidates.append((j, tc, similarity, verdict))
@@ -339,6 +409,8 @@ async def evaluate_conversation_per_turn(
                         best_tc = tc
                         best_j = j
                         best_similarity = similarity
+                        if use_alpsbench_scores:
+                            best_pair_score = similarity  # Store the pair score
                         if verdict == MatchVerdict.MATCH:
                             break  # MATCH is best possible, stop searching
 
@@ -360,6 +432,7 @@ async def evaluate_conversation_per_turn(
                         matched_tool_call=best_tc,
                         verdict=best_verdict,
                         candidates=top_candidates,
+                        pair_score=best_pair_score,
                     )
                 )
 
@@ -399,6 +472,11 @@ async def evaluate_conversation_cumulative(
 
     for turn_result in conv_result.turn_results:
         for tool_call in turn_result.tool_calls:
+            # Extract fact - only count storage tool calls (not search/retrieval)
+            fact = memory_system.extract_stored_fact(tool_call)
+            if not fact:
+                continue
+
             total_tool_calls += 1
 
             # Validate schema
@@ -408,10 +486,7 @@ async def evaluate_conversation_cumulative(
             else:
                 schema_invalid += 1
 
-            # Extract fact
-            fact = memory_system.extract_stored_fact(tool_call)
-            if fact:
-                all_stored_facts.append((tool_call, fact))
+            all_stored_facts.append((tool_call, fact))
 
     # Match all stored vs all expected (order doesn't matter)
     matched_indices: set[int] = set()
@@ -420,29 +495,43 @@ async def evaluate_conversation_cumulative(
     # For embedding matcher, we need to compute all similarities first to find true best match
     # (not just first PARTIAL when multiple PARTIALs exist)
     from .matchers.embedding import EmbeddingMatcher
+    from .matchers.alpsbench import AlpsBenchMatcher
     use_similarity_scores = isinstance(matcher, EmbeddingMatcher)
+    use_alpsbench_scores = isinstance(matcher, AlpsBenchMatcher)
 
     for expected in expected_facts:
         best_verdict = MatchVerdict.NO_MATCH
         best_tc = None
         best_idx = None
         best_similarity = -1.0
+        best_pair_score: float | None = None
 
         # Collect all candidates with scores (for ranking)
         all_candidates: list[tuple[int, ToolCall, float, MatchVerdict]] = []
+
+        # Convert expected fact to matcher input format
+        expected_input = _to_matcher_input(expected)
 
         # Find best match among all stored facts
         for idx, (tool_call, stored_fact) in enumerate(all_stored_facts):
             if idx in matched_indices:
                 continue  # Already matched to another expected fact
 
-            verdict = await matcher.match(expected.fact, stored_fact)
+            verdict = await matcher.match(expected_input, stored_fact)
 
-            # For embedding matcher, get actual similarity score
+            # Get similarity/pair score based on matcher type
             similarity = -1.0
             if use_similarity_scores:
-                embeddings = matcher.model.encode([expected.fact, stored_fact], normalize_embeddings=True)
+                # Embedding matcher needs strings, not dicts
+                expected_str = expected.fact if isinstance(expected_input, dict) else expected_input
+                stored_str = stored_fact.get("value") if isinstance(stored_fact, dict) else stored_fact
+                embeddings = matcher.model.encode([expected_str, stored_str], normalize_embeddings=True)
                 similarity = float(embeddings[0] @ embeddings[1])
+            elif use_alpsbench_scores:
+                # Get AlpsBench pair score for this match
+                pair_sc = matcher.get_last_pair_score()
+                if pair_sc is not None:
+                    similarity = pair_sc
 
             # Store this candidate
             all_candidates.append((idx, tool_call, similarity, verdict))
@@ -457,6 +546,8 @@ async def evaluate_conversation_cumulative(
                 best_tc = tool_call
                 best_idx = idx
                 best_similarity = similarity
+                if use_alpsbench_scores:
+                    best_pair_score = similarity  # Store the pair score
 
         # Mark as matched if we found any match (MATCH or PARTIAL)
         if best_verdict != MatchVerdict.NO_MATCH and best_idx is not None:
@@ -475,6 +566,7 @@ async def evaluate_conversation_cumulative(
                 expected_type=expected.type.value,
                 matched_tool_call=best_tc,
                 verdict=best_verdict,
+                pair_score=best_pair_score,
                 candidates=top_candidates,  # Top 5 ranked by similarity
             )
         )
@@ -519,6 +611,11 @@ async def evaluate_dataset_cumulative(
     for conv_result in run_result.conversation_results:
         for turn_result in conv_result.turn_results:
             for tool_call in turn_result.tool_calls:
+                # Extract fact - only count storage tool calls (not search/retrieval)
+                fact = memory_system.extract_stored_fact(tool_call)
+                if not fact:
+                    continue
+
                 total_tool_calls += 1
 
                 # Validate schema
@@ -528,10 +625,7 @@ async def evaluate_dataset_cumulative(
                 else:
                     schema_invalid += 1
 
-                # Extract fact
-                fact = memory_system.extract_stored_fact(tool_call)
-                if fact:
-                    all_stored_facts.append((tool_call, fact))
+                all_stored_facts.append((tool_call, fact))
 
     # Expected facts from dataset-level ground truth
     expected_facts = dataset.cumulative_ground_truth.should_store
@@ -553,17 +647,22 @@ async def evaluate_dataset_cumulative(
         # Collect all candidates with scores (for ranking)
         all_candidates: list[tuple[int, ToolCall, float, MatchVerdict]] = []
 
+        # Convert expected fact to matcher input format
+        expected_input = _to_matcher_input(expected)
+
         # Find best match among all stored facts
         for idx, (tool_call, stored_fact) in enumerate(all_stored_facts):
             if idx in matched_indices:
                 continue  # Already matched to another expected fact
 
-            verdict = await matcher.match(expected.fact, stored_fact)
+            verdict = await matcher.match(expected_input, stored_fact)
 
             # For embedding matcher, get actual similarity score
             similarity = -1.0
             if use_similarity_scores:
-                embeddings = matcher.model.encode([expected.fact, stored_fact], normalize_embeddings=True)
+                # Embedding matcher needs strings, not dicts
+                expected_str = expected.fact if isinstance(expected_input, dict) else expected_input
+                embeddings = matcher.model.encode([expected_str, stored_fact], normalize_embeddings=True)
                 similarity = float(embeddings[0] @ embeddings[1])
 
             # Store this candidate

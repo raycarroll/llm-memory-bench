@@ -39,7 +39,7 @@ class LiteLLMProvider(LLMProvider):
             kwargs = dict(
                 model=self.model,
                 messages=api_messages,
-                max_tokens=1024,
+                max_completion_tokens=1024,  # OpenAI's new parameter (LiteLLM passes through)
             )
             if tools:
                 kwargs["tools"] = self._to_openai_tools(tools)
@@ -66,6 +66,7 @@ class LiteLLMProvider(LLMProvider):
             tool_calls=tool_calls,
             input_tokens=usage.prompt_tokens if usage else 0,
             output_tokens=usage.completion_tokens if usage else 0,
+            metadata={"actual_model": response.model},
         )
 
     def build_tool_result_messages(

@@ -1,6 +1,6 @@
 host:
   name: claude-code
-  version: "1.0.33"
+  version: "2.1.294"
 
 system:
   name: gbrain

@@ -1,68 +1,137 @@
 from __future__ import annotations
 
+import json
+import re
 from dataclasses import dataclass, field
 
-from ..config import RunConfig, ValueRunConfig, get_provider
-from .dataset import ValueDataset, ValueScenario
+from ..config import RunConfig, get_provider
+from .dataset import Outcome, ValueDataset, ValueScenario, ValidatorSpec
 from .metrics import aggregate_metrics, compute_value_metrics
 from .runner import TrialResult, ValueRunResult
 
 
-QUALITY_JUDGE_PROMPT = """\
-You are evaluating an AI assistant's response to a user request.
+OUTCOME_JUDGE_PROMPT = """\
+You are evaluating whether an AI assistant achieved specific outcomes for a user.
 
-User's request: {task_prompt}
+User's request:
+{task_prompt}
 
 Assistant's response:
 {response}
 
-Evaluation rubric:
-{rubric}
+Memory available to the assistant:
+{memory_context}
 
-Score the response from 0.0 to 1.0 based on the rubric. Consider:
-- Did the response address the user's actual needs?
-- Was the response personalized and specific (vs generic and hedging)?
-- Did the assistant avoid asking unnecessary clarifying questions?
-- Was the response complete and actionable?
+Conversation context, including facts revealed by the user:
+{conversation_context}
 
-Respond with ONLY a decimal number between 0.0 and 1.0."""
+Outcomes to evaluate:
+{outcomes}
+
+For each outcome, return an object with:
+- status: one of "passed", "failed", or "uncertain"
+- score: a number from 0.0 to 1.0
+- explanation: concise evidence from the response, including which available
+  memory fact(s), if any, contributed to the outcome. Do not claim memory
+  contributed if the response does not use it.
+- evidence: short quotes or concrete observations supporting the judgement
+
+Respond with ONLY valid JSON in this form:
+{{"outcomes": {{"outcome_id": {{"status": "passed", "score": 1.0, "explanation": "..."}}}}}}
+"""
 
 
-async def judge_quality(
+def _parse_outcome_json(text: str) -> dict:
+    text = text.strip()
+    if text.startswith("```"):
+        text = re.sub(r"^```(?:json)?\s*|\s*```$", "", text).strip()
+    try:
+        parsed = json.loads(text)
+        return parsed.get("outcomes", {}) if isinstance(parsed, dict) else {}
+    except json.JSONDecodeError:
+        return {}
+
+
+async def validate_outcomes(
     task_prompt: str,
     response: str,
-    rubric: str,
+    outcomes: list[Outcome],
+    validator: ValidatorSpec,
     judge_provider,
-) -> float:
-    prompt = QUALITY_JUDGE_PROMPT.format(
-        task_prompt=task_prompt,
-        response=response,
-        rubric=rubric,
-    )
+    memory_facts: list[str] | None = None,
+    conversation: list[dict] | None = None,
+) -> list[dict]:
+    """Run the initial LLM-judge validator and return extensible results."""
+    if validator.type != "llm_judge":
+        return [
+            {
+                "outcome_id": outcome.id,
+                "status": "error",
+                "score": None,
+                "explanation": f"Unsupported validator type: {validator.type}",
+                "evidence": {},
+            }
+            for outcome in outcomes
+        ]
 
+    selected_ids = set(validator.outcomes)
+    selected = [o for o in outcomes if not selected_ids or o.id in selected_ids]
+    outcome_text = "\n".join(f"- {o.id}: {o.statement}" for o in selected)
+    memory_context = "\n".join(f"- {fact}" for fact in (memory_facts or [])) or "None"
+    conversation_context = "\n".join(
+        f"{turn.get('role', 'unknown')}: {turn.get('content', '')}"
+        for turn in (conversation or [])
+        if turn.get("content")
+    ) or "No additional conversation context"
     result = await judge_provider.generate(
-        messages=[{"role": "user", "content": prompt}],
+        messages=[
+            {
+                "role": "user",
+                "content": OUTCOME_JUDGE_PROMPT.format(
+                    task_prompt=task_prompt,
+                    response=response,
+                    memory_context=memory_context,
+                    conversation_context=conversation_context,
+                    outcomes=outcome_text,
+                ),
+            }
+        ],
         tools=[],
-        system="You are a precise evaluator. Respond with exactly one decimal number.",
+        system="You are a precise evaluator. Return only valid JSON.",
     )
+    judged = _parse_outcome_json(result.text)
 
-    text = result.text.strip()
-    try:
-        score = float(text)
-        return max(0.0, min(1.0, score))
-    except ValueError:
-        import re
+    validations = []
+    for outcome in selected:
+        value = judged.get(outcome.id, {})
+        score = value.get("score") if isinstance(value, dict) else None
+        if isinstance(score, (int, float)):
+            score = max(0.0, min(1.0, float(score)))
+        else:
+            score = None
+        status = value.get("status", "uncertain") if isinstance(value, dict) else "uncertain"
+        validations.append(
+            {
+                "outcome_id": outcome.id,
+                "status": status,
+                "score": score,
+                "explanation": value.get("explanation", "") if isinstance(value, dict) else "",
+                "evidence": value.get("evidence", {}) if isinstance(value, dict) else {},
+            }
+        )
+    return validations
 
-        match = re.search(r"(\d+\.?\d*)", text)
-        if match:
-            return max(0.0, min(1.0, float(match.group(1))))
-        return 0.5
+
+def _quality_score(validations: list[dict]) -> float:
+    scores = [v["score"] for v in validations if isinstance(v.get("score"), (int, float))]
+    return sum(scores) / len(scores) if scores else 0.5
 
 
 @dataclass
 class ScenarioEvaluation:
     scenario_id: str
     metrics_by_mode: dict[str, dict] = field(default_factory=dict)
+    validations_by_mode: dict[str, list[dict]] = field(default_factory=dict)
 
 
 @dataclass
@@ -104,25 +173,50 @@ async def evaluate_value_run(
         if not baseline_trial:
             continue
 
-        quality_baseline = await judge_quality(
-            scenario.task_prompt,
-            baseline_trial.final_response,
-            scenario.quality_rubric,
-            judge_provider,
-        )
+        baseline_validations: list[dict] = []
+        for validator in scenario.effective_validators():
+            baseline_validations.extend(
+                await validate_outcomes(
+                    scenario.task_prompt,
+                    baseline_trial.final_response,
+                    scenario.effective_outcomes(),
+                    validator,
+                    judge_provider,
+                    memory_facts=[],
+                    conversation=[
+                        {"role": turn.role, "content": turn.content}
+                        for turn in baseline_trial.turns
+                    ],
+                )
+            )
+        quality_baseline = _quality_score(baseline_validations)
 
         scenario_eval = ScenarioEvaluation(scenario_id=scenario.id)
+        scenario_eval.validations_by_mode["baseline"] = baseline_validations
 
         for mode, trial in scenario_result.trials.items():
             if mode == "baseline":
                 continue
 
-            quality_memory = await judge_quality(
-                scenario.task_prompt,
-                trial.final_response,
-                scenario.quality_rubric,
-                judge_provider,
-            )
+            memory_validations: list[dict] = []
+            memory_facts = [memory.fact for memory in scenario.memory_bank]
+            for validator in scenario.effective_validators():
+                memory_validations.extend(
+                    await validate_outcomes(
+                        scenario.task_prompt,
+                        trial.final_response,
+                        scenario.effective_outcomes(),
+                        validator,
+                        judge_provider,
+                        memory_facts=memory_facts,
+                        conversation=[
+                            {"role": turn.role, "content": turn.content}
+                            for turn in trial.turns
+                        ],
+                    )
+                )
+            quality_memory = _quality_score(memory_validations)
+            scenario_eval.validations_by_mode[mode] = memory_validations
 
             metrics = compute_value_metrics(
                 baseline=baseline_trial,

@@ -30,8 +30,12 @@ class EmbeddingMatcher(FactMatcher):
         self.match_threshold = match_threshold
         self.partial_threshold = partial_threshold
 
-    async def match(self, expected: str, stored: str) -> MatchVerdict:
-        embeddings = self.model.encode([expected, stored], normalize_embeddings=True)
+    async def match(self, expected: str | dict, stored: str | dict) -> MatchVerdict:
+        # Extract text from dicts (AlpsBench format)
+        expected_text = expected.get("fact") if isinstance(expected, dict) else expected
+        stored_text = stored.get("value") if isinstance(stored, dict) else stored
+
+        embeddings = self.model.encode([expected_text, stored_text], normalize_embeddings=True)
         score = float(embeddings[0] @ embeddings[1])
 
         if score >= self.match_threshold:

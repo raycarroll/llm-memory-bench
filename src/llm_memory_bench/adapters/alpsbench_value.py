@@ -2,7 +2,7 @@
 
 AlpsBench Task 2 entries have a memory_list (prior session memories) and
 new_dialogue. We use the memory_list as the memory bank and generate
-task prompts and quality rubrics via LLM.
+task prompts and explicit outcomes via LLM.
 """
 
 from __future__ import annotations
@@ -74,23 +74,23 @@ either knows or doesn't know these things
 Respond with ONLY the user message, no quotes or explanation."""
 
 
-RUBRIC_GENERATION_PROMPT = """\
-You are creating an evaluation rubric for an AI benchmark. Given a user \
-request and facts about the user, write a rubric for scoring the assistant's \
-response.
+OUTCOME_GENERATION_PROMPT = """\
+You are defining outcomes for an AI benchmark. Given a user request and facts \
+about the user, write specific statements describing what a successful \
+assistant response should accomplish.
 
 User request: {task_prompt}
 
 User facts:
 {memories}
 
-Write a rubric that covers:
+Write 3-5 outcome statements covering:
 1. How well the response addresses the user's actual needs (given their facts)
 2. Whether the response is personalized vs generic
 3. Whether the response avoids asking for information already in the facts
 4. Completeness and actionability
 
-Respond with ONLY the rubric text (3-5 bullet points), no preamble."""
+Respond with ONLY bullet points, no preamble."""
 
 
 def _build_persona_prompt(memory_list: list[dict]) -> str:
@@ -102,10 +102,19 @@ def _build_persona_prompt(memory_list: list[dict]) -> str:
     return "\n".join(lines)
 
 
-async def _generate_task_and_rubric(
+def _parse_outcomes(text: str) -> list[dict[str, str]]:
+    outcomes = []
+    for line in text.splitlines():
+        statement = line.strip().lstrip("-*").strip()
+        if statement:
+            outcomes.append({"id": f"outcome_{len(outcomes) + 1}", "statement": statement})
+    return outcomes
+
+
+async def _generate_task_and_outcomes(
     memory_list: list[dict],
     provider,
-) -> tuple[str, str]:
+) -> tuple[str, list[dict[str, str]]]:
     memories_text = "\n".join(
         f"- {m.get('value', '')}" for m in memory_list if m.get("value")
     )
@@ -122,11 +131,11 @@ async def _generate_task_and_rubric(
     )
     task_prompt = task_response.text.strip().strip('"')
 
-    rubric_response = await provider.generate(
+    outcomes_response = await provider.generate(
         messages=[
             {
                 "role": "user",
-                "content": RUBRIC_GENERATION_PROMPT.format(
+                "content": OUTCOME_GENERATION_PROMPT.format(
                     task_prompt=task_prompt, memories=memories_text
                 ),
             }
@@ -134,9 +143,9 @@ async def _generate_task_and_rubric(
         tools=[],
         system="You are a benchmark data generator. Be concise and precise.",
     )
-    rubric = rubric_response.text.strip()
+    outcomes = _parse_outcomes(outcomes_response.text)
 
-    return task_prompt, rubric
+    return task_prompt, outcomes
 
 
 async def generate_value_scenarios(
@@ -172,7 +181,7 @@ async def generate_value_scenarios(
         console.print(f"  Generating scenario {len(scenarios) + 1}...")
 
         try:
-            task_prompt, rubric = await _generate_task_and_rubric(
+            task_prompt, outcomes = await _generate_task_and_outcomes(
                 memory_list, provider
             )
         except Exception as e:
@@ -193,7 +202,8 @@ async def generate_value_scenarios(
             ],
             "task_prompt": task_prompt,
             "persona_prompt": _build_persona_prompt(memory_list),
-            "quality_rubric": rubric,
+            "outcomes": outcomes,
+            "validators": [{"type": "llm_judge"}],
             "noise_memories": [],
         }
 

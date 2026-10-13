@@ -45,12 +45,16 @@ class HybridMatcher(FactMatcher):
         self.total_comparisons = 0
         self.llm_escalations = 0
 
-    async def match(self, expected: str, stored: str) -> MatchVerdict:
+    async def match(self, expected: str | dict, stored: str | dict) -> MatchVerdict:
         self.total_comparisons += 1
+
+        # Extract text from dicts (AlpsBench format)
+        expected_text = expected.get("fact") if isinstance(expected, dict) else expected
+        stored_text = stored.get("value") if isinstance(stored, dict) else stored
 
         # Stage 1: Fast embedding filter
         embeddings = self.embedding_model.encode(
-            [expected, stored], normalize_embeddings=True
+            [expected_text, stored_text], normalize_embeddings=True
         )
         similarity = float(embeddings[0] @ embeddings[1])
 
@@ -67,7 +71,7 @@ class HybridMatcher(FactMatcher):
 
         from .llm import JUDGE_PROMPT
 
-        prompt = JUDGE_PROMPT.format(expected=expected, stored=stored)
+        prompt = JUDGE_PROMPT.format(expected=expected_text, stored=stored_text)
         response = await self.provider.generate(
             messages=[{"role": "user", "content": prompt}],
             tools=[],

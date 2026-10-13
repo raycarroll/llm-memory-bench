@@ -1,0 +1,212 @@
+scenarios:
+  - id: tau2-airline-cancel-refund
+    memory_bank:
+      - fact: "The user is travelling with an infant."
+        category: personal
+      - fact: "The user prefers a refund rather than travel credit when eligible."
+        category: preference
+    task_prompt: "I need to cancel my flight and get a refund."
+    persona_prompt: |
+      The user is travelling with an infant and prefers a refund rather than
+      travel credit when eligible. Answer questions naturally and do not claim
+      the request is complete until the assistant has addressed the goal.
+    outcomes:
+      - id: cancellation_path
+        statement: "The assistant explains the steps or available options for cancelling the flight."
+      - id: refund_preference
+        statement: "The assistant addresses the user's preference for a refund and explains any eligibility or limitation."
+      - id: infant_context
+        statement: "The assistant accounts for the infant travelling with the user when discussing the cancellation."
+    validators:
+      - type: llm_judge
+
+  - id: tau2-airline-change-seat
+    memory_bank:
+      - fact: "The user is travelling with a two-year-old child."
+        category: personal
+      - fact: "The user needs seats together and prefers an aisle seat."
+        category: preference
+    task_prompt: "I need to change my flight seats."
+    persona_prompt: |
+      The user is travelling with a two-year-old child, needs the seats
+      together, and prefers an aisle seat. Answer naturally and do not claim
+      the goal is complete until a workable seating option is discussed.
+    outcomes:
+      - id: seating_together
+        statement: "The assistant prioritizes keeping the user and child seated together."
+      - id: aisle_preference
+        statement: "The assistant considers the user's aisle-seat preference."
+      - id: actionable_change
+        statement: "The assistant gives a clear next step for changing or checking the seats."
+    validators:
+      - type: llm_judge
+
+  - id: tau2-airline-baggage
+    memory_bank:
+      - fact: "The user is travelling for a week-long business trip."
+        category: context
+      - fact: "The user wants to avoid checking a bag if possible."
+        category: preference
+    task_prompt: "What baggage should I bring for my trip?"
+    persona_prompt: |
+      The user is travelling for a week-long business trip and wants to avoid
+      checking a bag if possible. Answer naturally and ask only for details
+      that are genuinely needed.
+    outcomes:
+      - id: trip_context
+        statement: "The assistant accounts for the week-long business trip."
+      - id: carry_on_guidance
+        statement: "The assistant explains a practical carry-on option and any relevant limits or trade-offs."
+      - id: direct_guidance
+        statement: "The response gives useful guidance without requiring the user to repeat the stated context."
+    validators:
+      - type: llm_judge
+
+  - id: tau2-airline-disruption
+    memory_bank:
+      - fact: "The user has an important work presentation the morning after arrival."
+        category: constraint
+      - fact: "The user prefers the earliest reliable alternative when travel is disrupted."
+        category: preference
+    task_prompt: "My flight was disrupted and I need help finding an alternative."
+    persona_prompt: |
+      The user has an important work presentation the morning after arrival
+      and prefers the earliest reliable alternative. Answer naturally and do
+      not claim success until an alternative or clear next step is provided.
+    outcomes:
+      - id: time_constraint
+        statement: "The assistant treats arriving in time for the presentation as an important constraint."
+      - id: earliest_reliable_option
+        statement: "The assistant prioritizes the earliest reliable alternative rather than offering generic reassurance."
+      - id: next_step
+        statement: "The assistant gives a concrete next step for resolving the disruption."
+    validators:
+      - type: llm_judge
+
+  - id: tau2-airline-accessibility
+    memory_bank:
+      - fact: "The user uses a wheelchair and needs airport assistance."
+        category: accessibility
+      - fact: "The user prefers to receive accessibility arrangements in writing."
+        category: preference
+    task_prompt: "I need to arrange assistance for my upcoming flight."
+    persona_prompt: |
+      The user uses a wheelchair, needs airport assistance, and prefers the
+      arrangements to be confirmed in writing. Answer naturally and do not
+      claim completion until the assistance request is addressed.
+    outcomes:
+      - id: assistance_request
+        statement: "The assistant explains how to arrange the required airport assistance."
+      - id: accessibility_context
+        statement: "The assistant accounts for the user's wheelchair-related needs."
+      - id: written_confirmation
+        statement: "The assistant addresses how the user can receive written confirmation."
+    validators:
+      - type: llm_judge
+
+  - id: tau2-retail-return
+    memory_bank:
+      - fact: "The user bought the item as a gift for a colleague."
+        category: context
+      - fact: "The user prefers a replacement over a refund if the item is defective."
+        category: preference
+    task_prompt: "The item I received is defective. What can I do?"
+    persona_prompt: |
+      The item was bought as a gift for a colleague. The user prefers a
+      replacement over a refund if the item is defective. Answer naturally
+      and do not claim the issue is resolved until the options are clear.
+    outcomes:
+      - id: defect_resolution
+        statement: "The assistant explains the available resolution for a defective item."
+      - id: replacement_preference
+        statement: "The assistant considers a replacement before a refund where policy permits."
+      - id: gift_context
+        statement: "The assistant accounts for the item being intended as a gift."
+    validators:
+      - type: llm_judge
+
+  - id: tau2-retail-order-status
+    memory_bank:
+      - fact: "The user needs the order before a birthday celebration this weekend."
+        category: constraint
+      - fact: "The user prefers delivery updates by email."
+        category: preference
+    task_prompt: "Can you check on my order?"
+    persona_prompt: |
+      The user needs the order before a birthday celebration this weekend and
+      prefers delivery updates by email. Answer naturally and do not claim the
+      issue is resolved without addressing delivery timing or the next step.
+    outcomes:
+      - id: delivery_timing
+        statement: "The assistant addresses whether the order can arrive before the weekend."
+      - id: update_preference
+        statement: "The assistant considers the user's preference for email updates."
+      - id: status_next_step
+        statement: "The assistant provides a concrete order-status or escalation next step."
+    validators:
+      - type: llm_judge
+
+  - id: tau2-retail-address-change
+    memory_bank:
+      - fact: "The user recently moved and the saved delivery address may be outdated."
+        category: context
+      - fact: "The user wants delivery left with the building concierge when available."
+        category: preference
+    task_prompt: "I need to update something about my delivery."
+    persona_prompt: |
+      The user recently moved, so the saved delivery address may be outdated.
+      The user prefers delivery to be left with the building concierge when
+      available. Answer naturally and clarify only what is needed.
+    outcomes:
+      - id: address_safety
+        statement: "The assistant identifies that the delivery address should be checked or updated before shipment."
+      - id: concierge_preference
+        statement: "The assistant considers the user's preference for concierge delivery."
+      - id: actionable_update
+        statement: "The assistant gives a clear next step for updating the delivery details."
+    validators:
+      - type: llm_judge
+
+  - id: tau2-retail-subscription
+    memory_bank:
+      - fact: "The user is trying to reduce recurring monthly expenses."
+        category: constraint
+      - fact: "The user wants to keep access through the end of the current billing period."
+        category: preference
+    task_prompt: "I want to make a change to my subscription."
+    persona_prompt: |
+      The user is trying to reduce recurring monthly expenses but wants to
+      keep access through the end of the current billing period. Answer
+      naturally and do not claim completion until the available options are
+      explained.
+    outcomes:
+      - id: cost_reduction
+        statement: "The assistant explains options that could reduce the recurring cost."
+      - id: billing_period
+        statement: "The assistant addresses access through the end of the current billing period."
+      - id: subscription_next_step
+        statement: "The assistant provides a concrete next step for changing the subscription."
+    validators:
+      - type: llm_judge
+
+  - id: tau2-retail-wrong-item
+    memory_bank:
+      - fact: "The user is leaving for a trip in three days."
+        category: constraint
+      - fact: "The user prefers an expedited replacement if it can arrive before departure."
+        category: preference
+    task_prompt: "I received the wrong item in my order."
+    persona_prompt: |
+      The user is leaving for a trip in three days and prefers an expedited
+      replacement if it can arrive before departure. Answer naturally and do
+      not claim resolution until the replacement or another workable option
+      is addressed.
+    outcomes:
+      - id: wrong_item_resolution
+        statement: "The assistant explains how the wrong item can be corrected."
+      - id: travel_deadline
+        statement: "The assistant accounts for the user's three-day departure deadline."
+      - id: expedited_option
+        statement: "The assistant considers an expedited replacement when available."
+    validators:
+      - type: llm_judge

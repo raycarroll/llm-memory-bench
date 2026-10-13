@@ -21,6 +21,12 @@ dependencies = [
 ]
 
 [project.optional-dependencies]
+memoryhub = [
+    "memoryhub==0.15.3",
+]
+ui = [
+    "streamlit>=1.40.0",
+]
 embedding = [
     "sentence-transformers>=3.0",
 ]
@@ -31,6 +37,7 @@ dev = [
 
 [project.scripts]
 llm-memory-bench = "llm_memory_bench.cli:cli"
+llm-memory-bench-ui = "llm_memory_bench.ui:main"
 
 [tool.setuptools.packages.find]
 where = ["src"]

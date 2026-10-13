@@ -18,6 +18,7 @@ class ProviderResponse:
     tool_calls: list[ToolCall] = field(default_factory=list)
     input_tokens: int = 0
     output_tokens: int = 0
+    metadata: dict = field(default_factory=dict)  # Provider-specific metadata (e.g., actual_model)
 
 
 class ProviderError(Exception):
@@ -49,10 +50,10 @@ class LLMProvider(ABC):
     def _default_tool_result(tool_call: ToolCall) -> dict:
         return {"status": "success"}
 
-    async def preflight(self) -> None:
+    async def preflight(self) -> ProviderResponse:
         """Quick API call to verify credentials and model access before a full run."""
         try:
-            await self.generate(
+            return await self.generate(
                 messages=[{"role": "user", "content": "Hi"}],
                 tools=[],
                 system="Reply with OK.",

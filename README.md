@@ -17,14 +17,14 @@ This project uses conversations from [AlpsBench](https://huggingface.co/datasets
 
 - **API-level** (`run`, `value-run`) — Direct LLM API calls with simulated memory tools. The benchmark provides the system prompt and tool schemas (from `src/llm_memory_bench/systems/`), intercepts tool calls, and simulates success responses. Fast iteration, works with any LLM provider. Supports both extraction and value benchmarks.
 
-- **Containerised** (`bench`) — Real agent + real memory system integration testing. Runs Claude Code (or other agents) with actual memory systems (gbrain, Claude Code auto-memory) installed via MCP inside Docker. The agent makes real tool calls, data is actually stored, and we query what was saved. Currently implements extraction benchmark; value benchmark support could be added.
+- **Containerised** (`bench`, `container-value-run`) — Real agent + real memory system integration testing. Runs Claude Code (or other agents) with actual memory systems installed via MCP inside Docker. The agent makes real tool calls, data is actually stored, and we query what was saved.
 
-**These are orthogonal:** You can run either benchmark (extraction or value) in either mode. Currently, the containerised mode is only implemented for extraction, but could be extended to value benchmarking.
+**These are orthogonal:** You can run either benchmark (extraction or value) in either mode. The Streamlit UI supports API-level runs and Claude Code container value runs.
 
 | | Extraction Benchmark | Value Benchmark |
 |---|---|---|
 | **API-level** | ✅ `run` | ✅ `value-run` |
-| **Containerised** | ✅ `bench` | ⚠️ Not yet implemented |
+| **Containerised** | ✅ `bench` | ✅ `container-value-run` and Streamlit UI |
 
 **Key difference:** API-level tests "can the LLM use these tools correctly?" Containerised tests "does the full agent + memory system stack work together?"
 
@@ -65,6 +65,19 @@ pip install -e .
 ```
 
 Requires Python 3.11+. The containerised benchmark also requires Docker.
+
+### Optional benchmark UI
+
+The Streamlit UI provides a guided run-definition and execution layer over the
+existing benchmark engines, including Claude Code container value runs. It
+writes UI-launched results to `results/ui/`.
+
+```bash
+pip install -e '.[ui]'
+llm-memory-bench-ui
+```
+
+See [docs/ui-quickstart.md](docs/ui-quickstart.md).
 
 ## Terminology
 
@@ -184,8 +197,8 @@ Feeds conversations through the LLM and captures raw tool calls. Does not comput
 |------|---------|-------------|
 | `--dataset` | *(required)* | Path to converted dataset YAML |
 | `--system` | `simple` | Memory system to benchmark |
-| `--provider` | `anthropic` | LLM provider |
-| `--model` | `claude-sonnet-4-20250514` | Model to test |
+| `--provider` | `openai` | LLM provider |
+| `--model` | `gpt-4o` | Model to test |
 | `--max-conversations` | all | Limit conversations for quick tests |
 | `--max-total-tokens` | none | Stop after this many reported input plus output tokens |
 | `--max-cost-usd` | none | Stop after this estimated USD spend |
@@ -333,7 +346,8 @@ See [docs/prompt-comparison.md](docs/prompt-comparison.md) for detailed workflow
 
 Runs benchmarks through the full stack: a real coding agent (Claude Code) with a real memory system (gbrain, Claude Code auto-memory) installed inside Docker. Instead of intercepting tool calls at the API layer, the agent uses the memory system for real and we query what was stored afterward.
 
-**Currently supports:** Extraction benchmark only (value benchmark in containers not yet implemented)
+**Currently supports:** Extraction benchmark and paired value runs for the
+versioned Claude Code + MemoryHub integration profile.
 
 ```bash
 llm-memory-bench bench configs/claude-gbrain.yaml
@@ -342,6 +356,54 @@ llm-memory-bench bench configs/claude-gbrain.yaml
 This builds a Docker image with the host agent pinned to a specific version, installs the memory system via bash scripts from top-level `systems/` directory, feeds conversations through the agent, then queries what was actually stored.
 
 **Note:** Containerised mode does NOT use the Python `MemorySystem` adapters. It installs and queries real memory systems via bash scripts. This is true regardless of which benchmark (extraction or value) runs in the container.
+
+#### Versioned full-stack integration profiles
+
+New full-agent integrations use a versioned profile instead of creating a
+memory-system-specific image. A profile materializes the platform's complete
+configuration surface: MCP transport, rules, hooks, plugins/scripts,
+dependencies, permissions, runtime environment, lifecycle, and verification.
+
+The first profile is Claude Code + remote MemoryHub:
+
+```bash
+llm-memory-bench bench configs/claude-memoryhub-remote.yaml
+```
+
+For a real integrated value run, use a value scenario file and the container
+configuration. This runs a baseline Claude Code trial and a separate trial
+with scenario memories seeded into MemoryHub before the agent starts:
+
+```bash
+llm-memory-bench container-value-run \
+  --config configs/claude-memoryhub-remote.yaml \
+  --scenarios scenarios/test-value.yaml \
+  --max-scenarios 1 \
+  --user-sim-provider openai \
+  --judge-provider openai
+```
+
+The existing `value-run` command remains API-level and uses simulated memory
+adapters. It is not equivalent to `container-value-run`.
+
+```yaml
+host:
+  name: claude-code
+  version: "1.0.33"
+
+integration:
+  profile: integrations/profiles/memoryhub/remote-http-v1/profile.yaml
+  platform: claude-code
+  env:
+    MEMORYHUB_URL: "${MEMORYHUB_URL}"
+    MEMORYHUB_API_KEY: "${MEMORYHUB_API_KEY}"
+```
+
+The remote MemoryHub profile currently supports one isolated conversation per
+container. It fails multi-conversation reuse because remote MemoryHub does not
+yet provide a generic benchmark reset and a project ID alone cannot force all
+agent writes into that project. See
+[docs/container-integration-profiles.md](docs/container-integration-profiles.md).
 
 **Config format** (`configs/claude-gbrain.yaml`):
 

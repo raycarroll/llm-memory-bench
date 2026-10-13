@@ -1,0 +1,23 @@
+api_version: llm-memory-bench.dev/v1
+kind: MemorySeed
+
+metadata:
+  name: memoryhub-recall
+  version: 1.0.0
+
+provider: memoryhub
+mode: declarative
+
+memories:
+  - content: "The customer prefers email communication."
+    scope: user
+    weight: 0.9
+    content_type: declarative
+    metadata:
+      source: benchmark-fixture
+  - content: "The deployment target is the eu-west-1 region."
+    scope: project
+    weight: 0.8
+    content_type: declarative
+    metadata:
+      source: benchmark-fixture

@@ -3,9 +3,13 @@
 from __future__ import annotations
 
 import json
+import base64
+from functools import lru_cache
 import os
+import shlex
 import subprocess
 import tempfile
+import uuid
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from pathlib import Path
@@ -14,10 +18,27 @@ import yaml
 from rich.console import Console
 
 from .dataset import Conversation, Dataset, load_dataset
+from .integrations import (
+    MaterializationContext,
+    ProfileError,
+    ProfileVerifier,
+    IntegrationProfile,
+    load_profile,
+    materialize_profile,
+)
+from .seeding import (
+    SeedError,
+    SeedPlan,
+    SeedResult,
+    cleanup_benchmark_data,
+    load_seed_plan,
+    seed_benchmark_data,
+)
 
 console = Console()
 
 PROJECT_ROOT = Path(__file__).resolve().parent.parent.parent
+_CONTAINER_LOG_FIFO = "/run/llm-memory-bench/events"
 
 
 @dataclass
@@ -30,27 +51,86 @@ class RunConfig:
     model: str
     dataset_path: str
     max_conversations: int | None
+    agent_sdk_version: str = "0.2.165"
+    integration_profile: str | None = None
+    integration_platform: str | None = None
+    seed_plan: SeedPlan | None = None
+    keep_container: bool = False
 
     @classmethod
     def from_yaml(cls, path: Path) -> RunConfig:
         with open(path) as f:
             data = yaml.safe_load(f)
         host = data["host"]
-        system = data["system"]
+        system = data.get("system", {})
+        integration = data.get("integration", {})
+        benchmark = data.get("benchmark", {})
+        if not isinstance(benchmark, dict):
+            raise ValueError("benchmark must be a mapping")
+        seed_config = benchmark.get("seed")
+        seed_plan = None
+        if seed_config is not None:
+            if not isinstance(seed_config, dict):
+                raise ValueError("benchmark.seed must be a mapping")
+            fixture = seed_config.get("fixture")
+            if not isinstance(fixture, str) or not fixture.strip():
+                raise ValueError("benchmark.seed.fixture must be a path")
+            fixture_path = Path(fixture)
+            if not fixture_path.is_absolute():
+                config_relative = Path(path).resolve().parent / fixture_path
+                fixture_path = (
+                    config_relative
+                    if config_relative.exists()
+                    else PROJECT_ROOT / fixture_path
+                )
+            try:
+                seed_plan = load_seed_plan(fixture_path)
+            except (FileNotFoundError, SeedError) as exc:
+                raise ValueError(f"Invalid benchmark seed: {exc}") from exc
+        integration_profile = integration.get("profile")
+        container = data.get("container", {})
+        if not isinstance(container, dict):
+            raise ValueError("container must be a mapping")
+        keep_container = container.get("keep_alive", False)
+        if not isinstance(keep_container, bool):
+            raise ValueError("container.keep_alive must be a boolean")
+        if integration_profile:
+            profile_path = Path(integration_profile)
+            if not profile_path.is_absolute():
+                candidate = PROJECT_ROOT / profile_path
+                if candidate.exists():
+                    integration_profile = str(candidate)
+        profile_name = (
+            Path(integration_profile).parent.name
+            if integration_profile
+            else "profile"
+        )
         return cls(
             host_name=host["name"],
             host_version=host["version"],
-            system_name=system["name"],
+            system_name=system.get("name", profile_name),
             system_version=system.get("version"),
-            system_env=system.get("env", {}),
+            system_env={**system.get("env", {}), **integration.get("env", {})},
             model=data["model"],
             dataset_path=data["dataset"],
             max_conversations=data.get("max_conversations"),
+            agent_sdk_version=host.get("sdk_version", "0.2.165"),
+            integration_profile=integration_profile,
+            integration_platform=integration.get("platform"),
+            seed_plan=seed_plan,
+            keep_container=keep_container,
         )
 
     @property
+    def uses_integration_profile(self) -> bool:
+        return self.integration_profile is not None
+
+    @property
     def image_tag(self) -> str:
-        return f"llm-bench/{self.host_name}:{self.host_version}"
+        return (
+            f"llm-bench/{self.host_name}:{self.host_version}"
+            f"-sdk{self.agent_sdk_version}"
+        )
 
     def container_name(self) -> str:
         ts = datetime.now(timezone.utc).strftime("%Y%m%d-%H%M%S")
@@ -72,8 +152,86 @@ class BenchResult:
     environment: dict = field(default_factory=dict)
 
 
+@lru_cache(maxsize=1)
+def _container_runtime() -> str:
+    runtime = os.environ.get("LLM_MEMORY_BENCH_CONTAINER_RUNTIME", "").strip().lower()
+    if runtime:
+        if runtime not in {"docker", "podman"}:
+            raise RuntimeError(
+                "LLM_MEMORY_BENCH_CONTAINER_RUNTIME must be 'docker' or 'podman'"
+            )
+        return runtime
+
+    # Prefer Podman on this project, then fall back to Docker for hosts where
+    # the Podman machine is unavailable. An explicit environment override can
+    # still force either runtime.
+    for candidate in ("podman", "docker"):
+        try:
+            probe = subprocess.run(
+                [candidate, "info"],
+                stdout=subprocess.DEVNULL,
+                stderr=subprocess.DEVNULL,
+                check=False,
+                timeout=5,
+            )
+        except (FileNotFoundError, OSError, subprocess.TimeoutExpired):
+            continue
+        if probe.returncode == 0:
+            return candidate
+
+    raise RuntimeError(
+        "No reachable container runtime. Start Docker Desktop or run "
+        "`podman machine start`; optionally set "
+        "LLM_MEMORY_BENCH_CONTAINER_RUNTIME to docker or podman."
+    )
+
+
 def _docker(*args, check=True, **kwargs) -> subprocess.CompletedProcess:
-    return subprocess.run(["docker", *args], **kwargs, check=check)
+    """Run a Docker-compatible container CLI selected for this benchmark."""
+
+    return subprocess.run([_container_runtime(), *args], **kwargs, check=check)
+
+
+def _resolve_config_env(key: str, value: str) -> str:
+    """Resolve the small env-reference form allowed in run YAML."""
+
+    if not isinstance(value, str):
+        raise RuntimeError(f"Environment value for {key} must be a string")
+    if not (value.startswith("${") and value.endswith("}")):
+        return value
+    expression = value[2:-1]
+    if ":-" in expression:
+        env_name, default = expression.split(":-", 1)
+        return os.environ.get(env_name, default)
+    return os.environ.get(expression, "")
+
+
+def _vertex_enabled(config: RunConfig) -> bool:
+    """Return whether the container is configured to use Vertex AI."""
+
+    configured = config.system_env.get("CLAUDE_CODE_USE_VERTEX")
+    value = (
+        _resolve_config_env("CLAUDE_CODE_USE_VERTEX", configured)
+        if configured is not None
+        else os.environ.get("CLAUDE_CODE_USE_VERTEX", "")
+    )
+    return value.strip().lower() in {"1", "true", "yes", "on"}
+
+
+def _vertex_credentials_path(config: RunConfig) -> Path:
+    """Resolve the host-side ADC file that must be mounted into Docker."""
+
+    configured = config.system_env.get("GOOGLE_APPLICATION_CREDENTIALS")
+    if configured is not None:
+        raw_path = _resolve_config_env("GOOGLE_APPLICATION_CREDENTIALS", configured)
+    else:
+        raw_path = os.environ.get("GOOGLE_APPLICATION_CREDENTIALS", "")
+    path = (
+        Path(raw_path).expanduser()
+        if raw_path
+        else Path.home() / ".config" / "gcloud" / "application_default_credentials.json"
+    )
+    return path.resolve()
 
 
 def build_host_image(config: RunConfig) -> None:
@@ -93,26 +251,129 @@ def build_host_image(config: RunConfig) -> None:
     _docker(
         "build",
         "--build-arg", f"CLAUDE_CODE_VERSION={config.host_version}",
+        "--build-arg", f"CLAUDE_AGENT_SDK_VERSION={config.agent_sdk_version}",
         "-t", config.image_tag,
         str(host_dir),
     )
 
 
-def start_container(config: RunConfig) -> str:
+def load_integration(config: RunConfig) -> IntegrationProfile | None:
+    if not config.integration_profile:
+        return None
+    try:
+        return load_profile(config.integration_profile)
+    except (FileNotFoundError, ProfileError) as exc:
+        raise RuntimeError(f"Invalid integration profile: {exc}") from exc
+
+
+def materialize_integration(
+    config: RunConfig,
+    profile: IntegrationProfile,
+    target: str | Path,
+    project_id: str,
+) -> str:
+    platform = config.integration_platform or config.host_name
+    try:
+        result = materialize_profile(
+            profile,
+            platform,
+            target,
+            MaterializationContext(project_id=project_id),
+        )
+        errors = ProfileVerifier(profile, platform).verify_workspace(target)
+    except ProfileError as exc:
+        raise RuntimeError(f"Integration materialization failed: {exc}") from exc
+    if errors:
+        raise RuntimeError(
+            "Materialized integration failed verification:\n- "
+            + "\n- ".join(errors)
+        )
+    return result.effective_hash
+
+
+def validate_integration_environment(
+    config: RunConfig,
+    profile: IntegrationProfile,
+) -> None:
+    runtime_env = profile.topology.get("runtime_env", {})
+    if not isinstance(runtime_env, dict):
+        return
+
+    def value_for(key: str) -> str:
+        configured = config.system_env.get(key)
+        if configured is not None:
+            return _resolve_config_env(key, configured)
+        return os.environ.get(key, "")
+
+    missing = [
+        key for key in runtime_env.get("required", [])
+        if isinstance(key, str) and not value_for(key)
+    ]
+    if missing:
+        raise RuntimeError(
+            f"Integration {profile.profile_id} requires runtime environment: "
+            + ", ".join(missing)
+        )
+
+    one_of = runtime_env.get("one_of", [])
+    if isinstance(one_of, list) and one_of and not any(
+        isinstance(key, str) and value_for(key) for key in one_of
+    ):
+        raise RuntimeError(
+            f"Integration {profile.profile_id} requires one of: "
+            + ", ".join(str(key) for key in one_of)
+        )
+
+
+def resolved_system_environment(config: RunConfig) -> dict[str, str]:
+    """Resolve configured provider environment without exposing secret values."""
+
+    resolved: dict[str, str] = {}
+    for key, value in config.system_env.items():
+        resolved[key] = _resolve_config_env(key, value)
+    return resolved
+
+
+def start_container(
+    config: RunConfig,
+    profile: IntegrationProfile | None = None,
+    project_id: str | None = None,
+    legacy_install: bool = True,
+) -> str:
     system_dir = PROJECT_ROOT / "systems" / config.system_name
-    if not system_dir.exists():
+    if profile is None and legacy_install and not system_dir.exists():
         raise FileNotFoundError(f"No system definition at {system_dir}")
 
     host_dir = PROJECT_ROOT / "hosts" / config.host_name
 
     env_args = []
-    for key in ["ANTHROPIC_API_KEY", "ANTHROPIC_VERTEX_PROJECT_ID", "CLOUD_ML_REGION"]:
+    for key in [
+        "ANTHROPIC_API_KEY",
+        "ANTHROPIC_VERTEX_PROJECT_ID",
+        "CLOUD_ML_REGION",
+        "CLAUDE_CODE_USE_VERTEX",
+    ]:
         val = os.environ.get(key)
         if val:
             env_args.extend(["-e", f"{key}={val}"])
 
     for key, val in config.system_env.items():
-        env_args.extend(["-e", f"{key}={val}"])
+        # Host paths must be rewritten to the mounted path below. Passing the
+        # host path through would make it meaningless inside the container.
+        if key in {"GOOGLE_APPLICATION_CREDENTIALS", "MEMORYHUB_SEED_URL"}:
+            continue
+        env_args.extend(["-e", f"{key}={_resolve_config_env(key, val)}"])
+
+    if project_id:
+        env_args.extend(["-e", f"MEMORYHUB_PROJECT_ID={project_id}"])
+
+    # Hooks, plugins, and bridge scripts use this provider-neutral event sink
+    # to report lifecycle/context delivery without putting memory contents or
+    # credentials in the benchmark log.
+    env_args.extend([
+        "-e",
+        "LLM_MEMORY_BENCH_EVENT_LOG=/run/llm-memory-bench/integration-events.jsonl",
+    ])
 
     if config.system_version:
         env_args.extend([
@@ -120,27 +381,108 @@ def start_container(config: RunConfig) -> str:
         ])
 
     name = config.container_name()
+    mounts = ["-v", f"{host_dir}:/host-driver:ro"]
+    if _vertex_enabled(config):
+        adc_path = _vertex_credentials_path(config)
+        if not adc_path.is_file():
+            raise RuntimeError(
+                "Claude Code Vertex runs require Google Application Default "
+                f"Credentials, but no file was found at {adc_path}. Run "
+                "`gcloud auth application-default login` or set "
+                "GOOGLE_APPLICATION_CREDENTIALS to a valid host-side file."
+            )
+        container_adc_path = "/run/llm-memory-bench/google-application-default-credentials.json"
+        mounts.extend(["-v", f"{adc_path}:{container_adc_path}:ro"])
+        env_args.extend(["-e", f"GOOGLE_APPLICATION_CREDENTIALS={container_adc_path}"])
+    if profile is None and legacy_install:
+        mounts.extend([
+            "-v", f"{system_dir}:/system:ro",
+            "-e", "SYSTEM_INSTALL_SCRIPT=/system/install.sh",
+        ])
     result = _docker(
         "run", "-d",
         "--name", name,
-        "-v", f"{system_dir}:/system:ro",
-        "-v", f"{host_dir}:/host-driver:ro",
-        "-e", f"SYSTEM_INSTALL_SCRIPT=/system/install.sh",
+        *mounts,
         *env_args,
         config.image_tag,
-        "sleep", "infinity",
+        "bash", "-lc",
+        (
+            "echo 'llm-memory-bench container log stream ready' && "
+            "mkdir -p /run/llm-memory-bench && "
+            f"rm -f {_CONTAINER_LOG_FIFO} && "
+            f"mkfifo {_CONTAINER_LOG_FIFO} && "
+            # Keep the FIFO write end open in PID 1. Otherwise cat exits with
+            # status 0 after the first short-lived exec writer closes, which
+            # leaves subsequent podman exec calls targeting a stopped container.
+            f"exec 3<> {_CONTAINER_LOG_FIFO} && exec cat <&3"
+        ),
         capture_output=True, text=True,
     )
     container_id = result.stdout.strip()
-    console.print(f"Container {container_id[:12]} started.", style="dim")
+    state = _docker(
+        "inspect",
+        "--format",
+        "{{.State.Running}}",
+        container_id,
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    if result.returncode != 0 or state.returncode != 0 or state.stdout.strip() != "true":
+        logs = _docker(
+            "logs",
+            container_id,
+            capture_output=True,
+            text=True,
+            check=False,
+        )
+        detail = logs.stderr.strip() or logs.stdout.strip() or result.stderr.strip()
+        raise RuntimeError(
+            f"Container {name} did not remain running: {detail[:2000]}"
+        )
+    console.print(
+        f"Container {name} ({container_id[:12]}) started; "
+        f"runtime events are available in the container log pane.",
+        style="dim",
+    )
     return container_id
 
 
+def _emit_container_output(container_id: str, text: str) -> None:
+    """Forward captured exec output to the container's main log stream."""
+
+    if not text:
+        return
+    encoded = base64.b64encode(text.encode("utf-8", errors="replace")).decode("ascii")
+    result = _docker(
+        "exec",
+        container_id,
+        "bash",
+        "-lc",
+        f"printf '%s' '{encoded}' | base64 -d > {_CONTAINER_LOG_FIFO}",
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    if result.returncode != 0:
+        console.print(
+            f"  Container log forwarding failed: {result.stderr[:300]}",
+            style="yellow",
+        )
+
+
 def _exec(container_id: str, cmd: list[str], timeout: int = 300) -> subprocess.CompletedProcess:
-    return subprocess.run(
-        ["docker", "exec", container_id, *cmd],
+    result = subprocess.run(
+        [_container_runtime(), "exec", container_id, *cmd],
         capture_output=True, text=True, timeout=timeout,
     )
+    output = f"$ {' '.join(shlex.quote(part) for part in cmd)}\n"
+    if result.stdout:
+        output += result.stdout
+    if result.stderr:
+        output += "\n[stderr]\n" + result.stderr
+    _emit_container_output(container_id, output)
+    return result
 
 
 def install_system(container_id: str) -> None:
@@ -151,7 +493,56 @@ def install_system(container_id: str) -> None:
     console.print("System installed.", style="dim")
 
 
-def drive_conversation(container_id: str, conversation: Conversation, model: str | None = None) -> str:
+def install_integration(
+    container_id: str,
+    workspace: str | Path,
+    profile: IntegrationProfile,
+) -> None:
+    """Copy a materialized workspace and install its pinned runtime deps."""
+
+    console.print("Materializing agent integration...", style="dim")
+    _docker(
+        "cp",
+        f"{Path(workspace).resolve()}/.",
+        f"{container_id}:/workspace/",
+        capture_output=True,
+    )
+
+    packages = profile.dependencies.get("python", [])
+    if packages and (
+        not isinstance(packages, list)
+        or not all(isinstance(package, str) and package.strip() for package in packages)
+    ):
+        raise RuntimeError("integration dependencies.python must be a list of package strings")
+
+    if packages:
+        runtime = "/opt/llm-memory-bench/integration-runtime"
+        result = _exec(container_id, ["python3", "-m", "venv", runtime], timeout=120)
+        if result.returncode != 0:
+            raise RuntimeError(f"Integration runtime creation failed:\n{result.stderr}")
+        result = _exec(
+            container_id,
+            [
+                f"{runtime}/bin/pip",
+                "install",
+                "--disable-pip-version-check",
+                "--no-cache-dir",
+                *packages,
+            ],
+            timeout=600,
+        )
+        if result.returncode != 0:
+            raise RuntimeError(f"Integration dependency install failed:\n{result.stderr}")
+        console.print("Integration runtime installed.", style="dim")
+
+
+def drive_conversation(
+    container_id: str,
+    conversation: Conversation,
+    model: str | None = None,
+    profile_mode: bool = False,
+    session_id: str | None = None,
+) -> str:
     user_turns = [
         {"role": t.role, "content": t.content}
         for t in conversation.turns
@@ -178,11 +569,25 @@ def drive_conversation(container_id: str, conversation: Conversation, model: str
     ]
     if model:
         cmd.extend(["--model", model])
+    if profile_mode:
+        cmd.append("--profile-mode")
+    if session_id:
+        cmd.extend(["--resume", session_id])
 
     result = _exec(container_id, cmd, timeout=600)
 
     if result.returncode != 0:
-        console.print(f"  Driver error: {result.stderr[:300]}", style="red")
+        detail = result.stderr.strip() or result.stdout.strip() or "no diagnostic output"
+        raise RuntimeError(
+            f"Container driver failed with exit code {result.returncode}: "
+            f"{detail[:2000]}"
+        )
+    if not result.stdout.strip():
+        detail = result.stderr.strip() or "no stderr output"
+        raise RuntimeError(
+            "Container driver returned empty stdout instead of JSON: "
+            f"{detail[:2000]}"
+        )
 
     return result.stdout
 
@@ -198,6 +603,34 @@ def query_stored(container_id: str) -> list[dict]:
     except json.JSONDecodeError:
         console.print("  Query returned invalid JSON", style="red")
         return []
+
+
+def query_integration(
+    container_id: str,
+    profile: IntegrationProfile,
+    project_id: str,
+) -> list[dict]:
+    observe = profile.lifecycle.get("observe", {})
+    command = observe.get("command") if isinstance(observe, dict) else None
+    if not isinstance(command, list) or not all(isinstance(part, str) for part in command):
+        raise RuntimeError(
+            f"Integration {profile.profile_id} has no safe lifecycle.observe command"
+        )
+    expanded = [part.replace("${MEMORYHUB_PROJECT_ID}", project_id) for part in command]
+    result = _exec(container_id, expanded, timeout=60)
+    if result.returncode != 0:
+        console.print(f"  Integration observation failed: {result.stderr[:300]}", style="red")
+        return []
+    try:
+        data = json.loads(result.stdout)
+    except json.JSONDecodeError:
+        console.print("  Integration observation returned invalid JSON", style="red")
+        return []
+    if isinstance(data, dict) and isinstance(data.get("results"), list):
+        return data["results"]
+    if isinstance(data, list):
+        return data
+    return []
 
 
 def cleanup_system(container_id: str) -> None:
@@ -225,7 +658,13 @@ def collect_environment(container_id: str, config: RunConfig) -> dict:
     return env
 
 
-def stop_container(container_id: str) -> None:
+def stop_container(container_id: str, keep: bool = False) -> None:
+    if keep:
+        console.print(
+            f"Container {container_id[:12]} retained for inspection.",
+            style="yellow",
+        )
+        return
     _docker("rm", "-f", container_id, capture_output=True, check=False)
     console.print("Container removed.", style="dim")
 
@@ -246,12 +685,75 @@ def run_benchmark(config: RunConfig) -> BenchResult:
     if config.max_conversations:
         conversations = conversations[:config.max_conversations]
 
-    build_host_image(config)
-    container_id = start_container(config)
+    profile = load_integration(config)
+    seed_plan = config.seed_plan
+    project_id = None
+    seed_result: SeedResult | None = None
+    seed_environment: dict[str, str] = {}
+    workspace_tmp: tempfile.TemporaryDirectory[str] | None = None
+    effective_profile_hash = None
+    if profile is not None or seed_plan is not None:
+        project_id = (
+            f"llm-bench-{datetime.now(timezone.utc).strftime('%Y%m%d%H%M%S')}"
+            f"-{uuid.uuid4().hex[:10]}"
+        )
+
+    if profile is not None:
+        reset = profile.lifecycle.get("reset", {})
+        reset_supported = isinstance(reset, dict) and reset.get("support") == "supported"
+        if len(conversations) > 1 and not reset_supported:
+            raise RuntimeError(
+                f"Integration {profile.profile_id} cannot safely run "
+                "multiple conversations: lifecycle.reset is unsupported"
+            )
+        validate_integration_environment(config, profile)
+        workspace_tmp = tempfile.TemporaryDirectory(prefix="llm-bench-integration-")
+        effective_profile_hash = materialize_integration(
+            config, profile, workspace_tmp.name, project_id
+        )
+
+    if seed_plan is not None:
+        assert project_id is not None
+        if profile is not None:
+            profile_provider = str(profile.memory_system.get("name", "")).lower()
+            if profile_provider and profile_provider != seed_plan.provider:
+                raise RuntimeError(
+                    f"Benchmark seed provider {seed_plan.provider!r} does not match "
+                    f"integration provider {profile_provider!r}"
+                )
+        try:
+            seed_environment = resolved_system_environment(config)
+            seed_result = seed_benchmark_data(
+                seed_plan,
+                project_id,
+                seed_environment,
+            )
+        except SeedError as exc:
+            raise RuntimeError(f"Benchmark seed failed: {exc}") from exc
+
+    container_id: str | None = None
 
     try:
-        install_system(container_id)
+        # Keep image-build failures inside the seed cleanup boundary.  A
+        # failed build after a successful seed must not leave benchmark data
+        # behind.
+        build_host_image(config)
+        container_id = start_container(config, profile=profile, project_id=project_id)
+        if profile is None:
+            install_system(container_id)
+        else:
+            assert workspace_tmp is not None
+            install_integration(container_id, workspace_tmp.name, profile)
         environment = collect_environment(container_id, config)
+        if profile is not None:
+            environment["integration"] = {
+                "profile": profile.profile_id,
+                "platform": config.integration_platform or config.host_name,
+                "effective_hash": effective_profile_hash,
+                "project_id": project_id,
+            }
+        if seed_result is not None:
+            environment["benchmark_seed"] = seed_result.as_dict()
         result = BenchResult(config=config, environment=environment)
 
         for i, conversation in enumerate(conversations):
@@ -260,8 +762,17 @@ def run_benchmark(config: RunConfig) -> BenchResult:
                 f"({len(conversation.turns)} turns)"
             )
 
-            output = drive_conversation(container_id, conversation, model=config.model)
-            stored = query_stored(container_id)
+            output = drive_conversation(
+                container_id,
+                conversation,
+                model=config.model,
+                profile_mode=profile is not None,
+            )
+            if profile is None:
+                stored = query_stored(container_id)
+            else:
+                assert project_id is not None
+                stored = query_integration(container_id, profile, project_id)
             ground_truth = extract_ground_truth(conversation)
 
             conv_result = ConversationResult(
@@ -279,9 +790,23 @@ def run_benchmark(config: RunConfig) -> BenchResult:
             )
 
             if i < len(conversations) - 1:
-                cleanup_system(container_id)
+                if profile is None:
+                    cleanup_system(container_id)
 
         return result
 
     finally:
-        stop_container(container_id)
+        if container_id is not None:
+            stop_container(container_id, keep=config.keep_container)
+        if seed_result is not None and project_id is not None:
+            try:
+                cleanup_benchmark_data(
+                    seed_result.provider,
+                    project_id,
+                    seed_environment,
+                    seed_result,
+                )
+            except SeedError as exc:
+                raise RuntimeError(f"Benchmark cleanup failed: {exc}") from exc
+        if workspace_tmp is not None:
+            workspace_tmp.cleanup()

@@ -100,29 +100,41 @@ def _convert_task1_entry(
         utterance_to_memories.setdefault(utt_idx, []).append(mem)
 
     turns = []
+    all_facts = []  # Collect all facts for cumulative ground truth
+
     for turn in dialogue:
         j = turn["utterance_index"]
         role = turn["role"]
         content = turn["content"]
 
-        should_store = []
+        # Collect facts for cumulative ground truth
         memories_for_turn = utterance_to_memories.get(j, [])
         for mem in memories_for_turn:
-            fact_type = "direct" if mem.get("type") == "direct" else "indirect"
-            should_store.append(
+            # Extract all fields needed for AlpsBench canonical matching
+            # Match on 6-tuple: (label, value, type, preference_attitude, time_scope, emotion)
+            # Map "implied" → "indirect" (2 instances in dataset, likely annotation error)
+            fact_type = mem.get("type", "direct")
+            if fact_type == "implied":
+                fact_type = "indirect"
+            all_facts.append(
                 {
                     "fact": mem.get("value", ""),
+                    "label": mem.get("label", ""),
                     "type": fact_type,
+                    "preference_attitude": mem.get("preference_attitude"),
+                    "time_scope": mem.get("time_scope"),
+                    "emotion": mem.get("emotion"),
                     "source_id": mem.get("memory_id", ""),
                 }
             )
 
+        # In cumulative mode, turns have empty per-turn ground truth
         turns.append(
             {
                 "role": role,
                 "content": content,
                 "ground_truth": {
-                    "should_store": should_store,
+                    "should_store": [],  # Empty for cumulative mode
                     "should_not_store": [],
                 },
             }
@@ -130,10 +142,16 @@ def _convert_task1_entry(
 
     conv_id = input_entry.get("session_id", f"alpsbench-task1-{index:04d}")
 
+    # all_facts was already collected above during turn processing
+
     return {
         "id": conv_id,
         "source": "alpsbench-task1",
         "turns": turns,
+        "cumulative_ground_truth": {
+            "should_store": all_facts,
+            "should_not_store": [],
+        },
     }
 
 
@@ -193,28 +211,40 @@ def _convert_task2_entry(
         new_and_updated.setdefault(utt_idx, []).append(mem)
 
     turns = []
+    all_facts = []  # Collect all facts for cumulative ground truth
+
     for turn in dialogue:
         j = turn["utterance_index"]
         role = turn["role"]
         content = turn["content"]
 
-        should_store = []
+        # Collect facts for cumulative ground truth
         for mem in new_and_updated.get(j, []):
-            fact_type = "direct" if mem.get("type") == "direct" else "indirect"
-            should_store.append(
+            # Extract all fields needed for AlpsBench canonical matching
+            # Match on 6-tuple: (label, value, type, preference_attitude, time_scope, emotion)
+            # Map "implied" → "indirect" (2 instances in dataset, likely annotation error)
+            fact_type = mem.get("type", "direct")
+            if fact_type == "implied":
+                fact_type = "indirect"
+            all_facts.append(
                 {
                     "fact": mem.get("value", ""),
+                    "label": mem.get("label", ""),
                     "type": fact_type,
+                    "preference_attitude": mem.get("preference_attitude"),
+                    "time_scope": mem.get("time_scope"),
+                    "emotion": mem.get("emotion"),
                     "source_id": mem.get("memory_id", ""),
                 }
             )
 
+        # In cumulative mode, turns have empty per-turn ground truth
         turns.append(
             {
                 "role": role,
                 "content": content,
                 "ground_truth": {
-                    "should_store": should_store,
+                    "should_store": [],  # Empty for cumulative mode
                     "should_not_store": [],
                 },
             }
@@ -222,10 +252,16 @@ def _convert_task2_entry(
 
     conv_id = input_entry.get("session_id", f"alpsbench-task2-{index:04d}")
 
+    # all_facts was already collected above during turn processing
+
     return {
         "id": conv_id,
         "source": "alpsbench-task2",
         "turns": turns,
+        "cumulative_ground_truth": {
+            "should_store": all_facts,
+            "should_not_store": [],
+        },
     }
 
 
@@ -293,7 +329,10 @@ def convert_alpsbench(
     task1_path = output_dir / "alpsbench-task1.yaml"
     with open(task1_path, "w") as f:
         yaml.dump(
-            {"conversations": task1_convs},
+            {
+                "conversations": task1_convs,
+                "ground_truth_type": "cumulative",  # Batch evaluation uses cumulative matching
+            },
             f,
             default_flow_style=False,
             allow_unicode=True,
@@ -303,7 +342,10 @@ def convert_alpsbench(
     task2_path = output_dir / "alpsbench-task2.yaml"
     with open(task2_path, "w") as f:
         yaml.dump(
-            {"conversations": task2_convs},
+            {
+                "conversations": task2_convs,
+                "ground_truth_type": "cumulative",  # Batch evaluation uses cumulative matching
+            },
             f,
             default_flow_style=False,
             allow_unicode=True,

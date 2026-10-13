@@ -1,0 +1,96 @@
+api_version: llm-memory-bench.dev/v1
+kind: AgentMemoryIntegration
+
+metadata:
+  name: memoryhub-remote-http
+  version: 1.0.0
+
+memory_system:
+  name: memoryhub
+  client_version: 0.15.3
+  cli_version: 0.12.1
+  bridge_fastmcp_version: 4.0.0
+
+topology:
+  kind: remote-http-stdio-bridge
+  endpoint_env: MEMORYHUB_URL
+  agent_transport: stdio
+  bridge: authenticated-mcp-proxy
+  authentication:
+    - api-key
+    - bearer-token
+  runtime_env:
+    required:
+      - MEMORYHUB_URL
+    one_of:
+      - MEMORYHUB_API_KEY
+      - MEMORYHUB_AUTH_TOKEN
+  isolation: dedicated-project-id
+  reset: unsupported
+
+capabilities:
+  - memory.read
+  - memory.write
+  - memory.search
+  - session-start-hook
+  - project-scoped-observation
+
+required_context:
+  - project_id
+
+dependencies:
+  python:
+    - memoryhub==0.15.3
+    - memoryhub-cli==0.12.1
+    - fastmcp==4.0.0
+    - mcp==2.1.1
+
+platforms:
+  claude-code:
+    min_version: 1.0.33
+    assets:
+      - source: assets/.memoryhub.yaml
+        target: .memoryhub.yaml
+      - source: assets/.claude/rules/memoryhub-loading.md
+        target: .claude/rules/memoryhub-loading.md
+      - source: assets/.claude/hooks/load-memories.sh
+        target: .claude/hooks/load-memories.sh
+        mode: 493
+      - source: assets/.claude/settings.json
+        target: .claude/settings.json
+      - source: assets/.llm-memory-bench/memoryhub-mcp-proxy.py
+        target: .llm-memory-bench/memoryhub-mcp-proxy.py
+    mcp:
+      path: .mcp.json
+      servers:
+        memoryhub:
+          type: stdio
+          command: /opt/llm-memory-bench/integration-runtime/bin/python
+          args:
+            - /workspace/.llm-memory-bench/memoryhub-mcp-proxy.py
+          env:
+            MEMORYHUB_URL: "${MEMORYHUB_URL}"
+            MEMORYHUB_API_KEY: "${MEMORYHUB_API_KEY}"
+            MEMORYHUB_AUTH_TOKEN: "${MEMORYHUB_AUTH_TOKEN}"
+    required_commands:
+      - memoryhub
+
+lifecycle:
+  session_start:
+    hook: .claude/hooks/load-memories.sh
+  observe:
+    command:
+      - /opt/llm-memory-bench/integration-runtime/bin/memoryhub
+      - list
+      - --project-id
+      - "${MEMORYHUB_PROJECT_ID}"
+      - --output
+      - json
+      - --max
+      - "1000"
+  reset:
+    support: unsupported
+    reason: >-
+      Remote MemoryHub has no generic benchmark reset operation. A benchmark
+      must allocate a dedicated project ID/account or provide a provider-side
+      cleanup adapter before claiming isolated runs.

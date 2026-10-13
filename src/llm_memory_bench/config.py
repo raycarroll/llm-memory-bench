@@ -4,21 +4,26 @@ from pydantic import BaseModel
 
 
 class RunConfig(BaseModel):
-    provider: str = "anthropic"
-    model: str = "claude-sonnet-4-20250514"
+    provider: str = "openai"
+    model: str = "gpt-4o"
     system: str = "simple"
     scenario: str | None = None  # For BFCL systems
-    judge_provider: str = "anthropic"
-    judge_model: str = "claude-sonnet-4-20250514"
+    batch: bool = False  # Batch extraction mode (AlpsBench-style)
+    judge_provider: str = "openai"
+    judge_model: str = "gpt-4o"
     max_conversations: int | None = None
     api_key_env: str | None = None
+    max_total_tokens: int | None = None
+    max_cost_usd: float | None = None
+    save_responses: bool = False  # Save raw text responses and errors in run.json
 
 
 class ValueRunConfig(RunConfig):
     injection_mode: str = "prompt"  # "prompt" | "tool" | "both"
     max_turns: int = 10
-    user_simulator_provider: str = "anthropic"
-    user_simulator_model: str = "claude-sonnet-4-20250514"
+    judge_during_run: bool = True
+    user_simulator_provider: str = "openai"
+    user_simulator_model: str = "gpt-4o"
     max_scenarios: int | None = None
 
 

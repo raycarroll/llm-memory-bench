@@ -1,9 +1,10 @@
 from __future__ import annotations
 
 from pathlib import Path
+from typing import Any
 
 import yaml
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 
 
 class MemoryEntry(BaseModel):
@@ -11,13 +12,35 @@ class MemoryEntry(BaseModel):
     category: str = "general"
 
 
+class Outcome(BaseModel):
+    """A specific result the goal is intended to produce."""
+
+    id: str
+    statement: str
+
+
+class ValidatorSpec(BaseModel):
+    """Configuration for a mechanism that validates one or more outcomes."""
+
+    type: str = "llm_judge"
+    outcomes: list[str] = Field(default_factory=list)
+    config: dict[str, Any] = Field(default_factory=dict)
+
+
 class ValueScenario(BaseModel):
     id: str
     memory_bank: list[MemoryEntry]
     task_prompt: str
     persona_prompt: str
-    quality_rubric: str
-    noise_memories: list[MemoryEntry] = []
+    outcomes: list[Outcome]
+    validators: list[ValidatorSpec] = Field(default_factory=lambda: [ValidatorSpec()])
+    noise_memories: list[MemoryEntry] = Field(default_factory=list)
+
+    def effective_outcomes(self) -> list[Outcome]:
+        return self.outcomes
+
+    def effective_validators(self) -> list[ValidatorSpec]:
+        return self.validators
 
 
 class ValueDataset(BaseModel):

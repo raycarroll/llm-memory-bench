@@ -262,6 +262,62 @@ async def run_conversation(
     return result
 
 
+async def run_final_sweep(
+    conversation: Conversation,
+    provider,
+    sweep_prompt: str,
+    tools: list[dict],
+    format_tool_result,
+    budget: UsageBudget | None = None,
+) -> list[ToolCall]:
+    """Run final extraction sweep after conversation completes.
+
+    Args:
+        conversation: The completed conversation
+        provider: LLM provider
+        sweep_prompt: Extraction-focused system prompt
+        tools: Memory tools
+        format_tool_result: Tool result formatter
+        budget: Optional token budget
+
+    Returns:
+        List of tool calls from the sweep
+    """
+    import json
+
+    # Build conversation text for review
+    dialogue = []
+    for turn in conversation.turns:
+        dialogue.append({
+            "role": turn.role,
+            "text": turn.content
+        })
+
+    conversation_text = json.dumps({"dialogue": dialogue}, ensure_ascii=False)
+
+    console.print("    [dim]final sweep...[/dim]", style="dim")
+
+    start = time.monotonic()
+    response = await provider.generate(
+        messages=[{"role": "user", "content": conversation_text}],
+        tools=tools,
+        system=sweep_prompt,
+    )
+    latency = (time.monotonic() - start) * 1000
+
+    if budget:
+        budget.record(response.input_tokens, response.output_tokens)
+
+    tool_calls = response.tool_calls or []
+    console.print(
+        f"    sweep done — {len(tool_calls)} additional facts, "
+        f"{response.input_tokens + response.output_tokens} tokens ({latency:.0f}ms)",
+        style="dim",
+    )
+
+    return tool_calls
+
+
 async def run_conversation_sequential(
     conversation: Conversation,
     provider,
@@ -523,6 +579,31 @@ async def run_benchmark(dataset: Dataset, config: RunConfig) -> RunResult:
                     format_tool_result=memory_system.format_tool_result,
                     budget=budget,
                 )
+
+                # Check if system requires final extraction sweep
+                if memory_system.requires_final_sweep():
+                    sweep_tool_calls = await run_final_sweep(
+                        conversation,
+                        provider,
+                        sweep_prompt=memory_system.final_sweep_prompt(),
+                        tools=tools,
+                        format_tool_result=memory_system.format_tool_result,
+                        budget=budget,
+                    )
+
+                    # Add sweep tool calls to the last turn result
+                    if sweep_tool_calls and conv_result.turn_results:
+                        # Create a synthetic turn result for the sweep
+                        sweep_turn = TurnResult(
+                            turn_index=len(conversation.turns),
+                            role="sweep",
+                            tool_calls=sweep_tool_calls,
+                            input_tokens=0,  # Already tracked in budget
+                            output_tokens=0,
+                            latency_ms=0,
+                        )
+                        conv_result.turn_results.append(sweep_turn)
+
             run_result.conversation_results.append(conv_result)
             if budget.stopped:
                 break

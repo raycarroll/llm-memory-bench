@@ -14,6 +14,16 @@ versions:
       Baseline memory system with simple add_memory tool.
       Single-tool interface with fact and category parameters.
       Includes clear guidelines on what to save vs. what to skip.
+    default: false
+
+  - version: v2_2026-09_grounded
+    commit: internal
+    pulled: 2026-09-24
+    notes: |
+      Adds anti-hallucination instructions to v1.
+      Explicitly tells agent to acknowledge when it lacks real-time data.
+      Prevents invention of business names, prices, or current info.
+      Recommends user search external sources when needed.
     default: true
 
-default_version: v1_2024-11
+default_version: v2_2026-09_grounded

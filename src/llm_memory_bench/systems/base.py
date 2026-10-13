@@ -30,8 +30,13 @@ class MemorySystem(ABC):
         ...
 
     @abstractmethod
-    def extract_stored_fact(self, tool_call: ToolCall) -> str:
-        """Extract the semantic content from a tool call for evaluation."""
+    def extract_stored_fact(self, tool_call: ToolCall) -> str | dict:
+        """Extract the semantic content from a tool call for evaluation.
+
+        Returns:
+            - str: For most systems, the fact value as a string
+            - dict: For AlpsBench, a dict with (label, value, type, preference_attitude, time_scope, emotion)
+        """
         ...
 
     def format_tool_result(self, tool_call: ToolCall) -> dict:
@@ -43,6 +48,21 @@ class MemorySystem(ABC):
 
     def version_info(self) -> dict:
         return {"system": self.name}
+
+    def requires_final_sweep(self) -> bool:
+        """Whether this system needs a final extraction sweep after conversation.
+
+        Override to return True in sweep variants.
+        """
+        return False
+
+    def final_sweep_prompt(self) -> str:
+        """System prompt for final extraction sweep.
+
+        Override in sweep variants to provide extraction-focused instructions.
+        Returns empty string for non-sweep systems.
+        """
+        return ""
 
     def inject_memories(self, base_prompt: str, memories: list[dict]) -> str:
         if not memories:

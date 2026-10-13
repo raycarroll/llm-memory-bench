@@ -1,0 +1,118 @@
+version: v1_2026-10
+source_commit: mem0ai/mem0 agent-plugin-core
+pulled_date: 2026-10-05
+
+# System prompt from Mem0's agent plugin core
+# Adapted for personal memory extraction in llm-memory-bench
+system_prompt: |
+  # Mem0 Memory Instructions
+
+  You are extracting user memories from conversations. Save concise facts about
+  the user that will help in future interactions: preferred tools, interests,
+  personal background, communication preferences, and anything the user explicitly
+  asked to be remembered about themselves.
+
+  ## What to save
+
+  - Personal preferences and habits
+  - Background information (location, occupation, education)
+  - Likes and dislikes
+  - Goals and plans
+  - Relationships and context
+  - Explicit "remember this" requests
+
+  ## How to save
+
+  - Write in third person about the user (not "you" or "I")
+  - Be concise and specific
+  - One fact per memory
+  - Include evidence from the conversation
+  - Skip temporary or task-specific information
+
+  ## What NOT to save
+
+  - Task requests or commands
+  - Temporary conversation context
+  - Information about the assistant or session
+  - "The user has no preferences" or "nothing was learned"
+
+  If nothing useful was learned about the user, make no memory calls.
+
+# Mem0 tool schema for add/search/update/delete operations
+tool_schema:
+  name: mem0_memory
+  description: |
+    Mem0 memory operations for storing and retrieving user information.
+
+    Actions:
+      - add: Store new memories from the conversation
+      - search: Find relevant memories using semantic search
+      - update: Modify an existing memory
+      - delete: Remove a memory by ID
+
+    Use add after learning new information about the user.
+    Use search when you need context about the user.
+  input_schema:
+    type: object
+    properties:
+      action:
+        type: string
+        enum: [add, search, update, delete]
+        description: The memory operation to perform
+      messages:
+        type: array
+        description: "For add: conversation messages to extract memories from"
+        items:
+          type: object
+          properties:
+            role:
+              type: string
+            content:
+              type: string
+      query:
+        type: string
+        description: "For search: semantic search query"
+      memory_id:
+        type: string
+        description: "For update/delete: ID of the memory to modify"
+      content:
+        type: string
+        description: "For update: new content for the memory"
+      user_id:
+        type: string
+        description: "Optional user identifier for scoping"
+      metadata:
+        type: object
+        description: "Optional metadata to attach to memories"
+    required: [action]
+
+# Mem0 memory categories for coding/knowledge work
+# (Included for reference - not used in personal memory extraction)
+coding_categories:
+  - name: project_knowledge
+    description: What the project is and how its code, APIs, data, files, and components work
+  - name: decisions_and_constraints
+    description: Why an approach was chosen, what must remain true, and rules future work must follow
+  - name: workflows
+    description: How to run, test, debug, deploy, configure, or otherwise work on the project
+  - name: problems_and_fixes
+    description: Bugs, failures, known pitfalls, their causes, and how to fix or avoid them
+  - name: results
+    description: Outcomes and measurements from tests, benchmarks, experiments, or investigations
+
+# Note: Mem0's actual implementation uses their Platform API
+# This schema adapts their approach for benchmark evaluation
+design_notes: |
+  Mem0 is primarily a memory platform accessed via REST API. Their agent plugin
+  only exposes search_memories as an MCP tool; memory writing happens via the
+  Platform API with automatic fact extraction.
+
+  This adaptation provides a unified tool interface (add/search/update/delete)
+  for benchmark purposes, using Mem0's extraction instructions as the system
+  prompt.
+
+  Key differences from MemoryHub:
+  - Mem0 emphasizes automatic fact extraction from messages (not manual writes)
+  - Separate instructions for personal vs project memories
+  - Category-based organization
+  - Platform handles deduplication and synthesis

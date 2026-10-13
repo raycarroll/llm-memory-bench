@@ -15,40 +15,19 @@ from .evaluator import evaluate_run
 from .matchers import list_matchers
 from .matchers.base import FactMatcher
 from .providers.base import ProviderError
+from .pricing import estimate_cost
 from .runner import run_benchmark
 from .systems import get_system, list_systems
 
-# Per-million-token pricing. Input/output rates for common models.
-_TOKEN_COSTS: dict[str, tuple[float, float]] = {
-    # (input_per_M, output_per_M)
-    "claude-sonnet-4-5@20250929": (3.0, 15.0),
-    "claude-sonnet-4-5-20250929": (3.0, 15.0),
-    "claude-sonnet-4@20250514": (3.0, 15.0),
-    "claude-sonnet-4-20250514": (3.0, 15.0),
-    "claude-opus-4@20250514": (15.0, 75.0),
-    "claude-opus-4-20250514": (15.0, 75.0),
-    "claude-haiku-3-5-20241022": (0.80, 4.0),
-    "gpt-4o": (2.50, 10.0),
-    "gpt-4o-mini": (0.15, 0.60),
-}
-
-
-def _estimate_cost(model: str, input_tokens: int, output_tokens: int) -> float | None:
-    rates = _TOKEN_COSTS.get(model)
-    if rates is None:
-        return None
-    return (input_tokens * rates[0] + output_tokens * rates[1]) / 1_000_000
-
-
 def _token_summary(run_result) -> dict:
-    total_input = 0
-    total_output = 0
+    total_input = run_result.preflight_input_tokens
+    total_output = run_result.preflight_output_tokens
     for cr in run_result.conversation_results:
         for tr in cr.turn_results:
             total_input += tr.input_tokens
             total_output += tr.output_tokens
     total = total_input + total_output
-    cost = _estimate_cost(run_result.config.model, total_input, total_output)
+    cost = estimate_cost(run_result.config.model, total_input, total_output)
     summary = {
         "input_tokens": total_input,
         "output_tokens": total_output,
@@ -69,7 +48,7 @@ def _token_summary_from_data(data: dict) -> dict:
             total_output += turn.get("output_tokens", 0)
     total = total_input + total_output
     model = data.get("config", {}).get("model", "")
-    cost = _estimate_cost(model, total_input, total_output)
+    cost = estimate_cost(model, total_input, total_output)
     summary = {
         "input_tokens": total_input,
         "output_tokens": total_output,
@@ -94,6 +73,12 @@ def _build_matcher(name: str, config: RunConfig | None = None, api_key_env: str 
     if name == "embedding":
         from .matchers.embedding import EmbeddingMatcher
         return EmbeddingMatcher()
+    if name == "exact":
+        from .matchers.exact import ExactMatcher
+        return ExactMatcher()
+    if name == "alpsbench":
+        from .matchers.alpsbench import AlpsBenchMatcher
+        return AlpsBenchMatcher()
     if name == "hybrid":
         from .matchers.hybrid import HybridMatcher
         if config is None:
@@ -105,6 +90,37 @@ def _build_matcher(name: str, config: RunConfig | None = None, api_key_env: str 
         )
         return HybridMatcher(get_provider(judge_config))
     raise ValueError(f"Unknown matcher: {name}")
+
+
+def _estimate_run_usage(dataset, model: str, system_name: str, scenario: str | None, max_conversations: int | None) -> dict:
+    """Estimate usage using four characters per token and 1024 output tokens per user turn."""
+    system_kwargs = {"scenario": scenario} if scenario else {}
+    memory_system = get_system(system_name, **system_kwargs)
+    system_chars = len(memory_system.system_prompt())
+    tool_chars = len(json.dumps(memory_system.tool_definitions()))
+    conversations = dataset.conversations
+    if max_conversations:
+        conversations = conversations[:max_conversations]
+
+    input_chars = 0
+    user_turns = 0
+    for conversation in conversations:
+        history_chars = 0
+        for turn in conversation.turns:
+            history_chars += len(turn.content)
+            if turn.role == "user":
+                user_turns += 1
+                input_chars += system_chars + tool_chars + history_chars
+
+    input_tokens = max(1, round(input_chars / 4))
+    output_tokens = user_turns * 1024
+    return {
+        "input_tokens": input_tokens,
+        "output_tokens": output_tokens,
+        "total_tokens": input_tokens + output_tokens,
+        "estimated_cost_usd": estimate_cost(model, input_tokens, output_tokens),
+        "user_turns": user_turns,
+    }
 
 
 def _serialize_run(run_result, config, dataset_path, dataset) -> dict:
@@ -123,12 +139,29 @@ def _serialize_run(run_result, config, dataset_path, dataset) -> dict:
                 "turn_index": tr.turn_index,
                 "role": tr.role,
             }
+
+            # Include conversation content for completeness
             if conversation and tr.turn_index < len(conversation.turns):
-                gt = conversation.turns[tr.turn_index].ground_truth
+                turn = conversation.turns[tr.turn_index]
+                turn_data["content"] = turn.content
+
+                # Include ground truth if available
+                gt = turn.ground_truth
                 turn_data["ground_truth"] = [
                     {"fact": f.fact, "type": f.type.value}
                     for f in gt.should_store
                 ]
+
+            # Include assistant response text (always if save_responses=True)
+            if config.save_responses and tr.response_text:
+                turn_data["response_text"] = tr.response_text
+
+            # Include errors and warnings
+            if tr.errors:
+                turn_data["errors"] = tr.errors
+            if tr.warnings:
+                turn_data["warnings"] = tr.warnings
+
             if tr.tool_calls:
                 turn_data["tool_calls"] = [
                     {"name": tc.name, "arguments": tc.arguments}
@@ -146,7 +179,7 @@ def _serialize_run(run_result, config, dataset_path, dataset) -> dict:
         })
 
     tokens = _token_summary(run_result)
-    return {
+    output = {
         "config": config.model_dump(),
         "memory_system": memory_system.version_info(),
         "dataset": {
@@ -154,19 +187,88 @@ def _serialize_run(run_result, config, dataset_path, dataset) -> dict:
             "summary": dataset.summary(),
         },
         "usage": tokens,
+        "stop_reason": run_result.stop_reason,
         "conversations": conversations,
         "total_time_ms": run_result.total_time_ms,
     }
+
+    # Include actual model if it differs from requested
+    if run_result.actual_model:
+        output["actual_model"] = run_result.actual_model
+
+    return output
+
+
+def _write_run_log(log_path: Path, output_data: dict, config, run_result) -> None:
+    """Write a structured run.log file with summary and errors/warnings."""
+    from datetime import datetime, timezone
+
+    lines = []
+    lines.append(f"# Run Log - {datetime.now(timezone.utc).strftime('%Y-%m-%d %H:%M:%S UTC')}")
+    lines.append("")
+    lines.append("## Configuration")
+    lines.append(f"Provider: {config.provider}")
+    lines.append(f"Model: {config.model}")
+    lines.append(f"System: {config.system}")
+    lines.append(f"Batch mode: {config.batch}")
+    if config.scenario:
+        lines.append(f"Scenario: {config.scenario}")
+    lines.append("")
+
+    lines.append("## Summary")
+    lines.append(f"Total conversations: {len(output_data['conversations'])}")
+    lines.append(f"Total tokens: {output_data['usage']['total_tokens']:,}")
+    lines.append(f"  Input: {output_data['usage']['input_tokens']:,}")
+    lines.append(f"  Output: {output_data['usage']['output_tokens']:,}")
+    lines.append(f"Total time: {output_data['total_time_ms'] / 1000:.1f}s")
+    if run_result.actual_model:
+        lines.append(f"Actual model used: {run_result.actual_model}")
+    lines.append("")
+
+    # Collect all errors and warnings
+    all_errors = []
+    all_warnings = []
+    for conv in output_data['conversations']:
+        for turn in conv['turns']:
+            if 'errors' in turn:
+                all_errors.extend([
+                    f"[{conv['conversation_id']} turn {turn['turn_index']}] {err}"
+                    for err in turn['errors']
+                ])
+            if 'warnings' in turn:
+                all_warnings.extend([
+                    f"[{conv['conversation_id']} turn {turn['turn_index']}] {warn}"
+                    for warn in turn['warnings']
+                ])
+
+    if all_errors:
+        lines.append("## Errors")
+        for error in all_errors:
+            lines.append(f"- {error}")
+        lines.append("")
+
+    if all_warnings:
+        lines.append("## Warnings")
+        for warning in all_warnings:
+            lines.append(f"- {warning}")
+        lines.append("")
+
+    if not all_errors and not all_warnings:
+        lines.append("## Status")
+        lines.append("No errors or warnings reported.")
+        lines.append("")
+
+    log_path.write_text("\n".join(lines))
 
 
 console = Console()
 
 
 def _run_id(provider: str, model: str, system: str) -> str:
-    """Generate run filename with format: run_{timestamp}_{provider}_{model}_{system}"""
+    """Generate run directory name with format: {timestamp}_{provider}_{model}_{system}"""
     model_short = model.replace("/", "-").replace("@", "-")
     ts = datetime.now(timezone.utc).strftime("%Y%m%d-%H%M%S")
-    return f"run_{ts}_{provider}_{model_short}_{system}"
+    return f"{ts}_{provider}_{model_short}_{system}"
 
 
 @click.group()
@@ -215,8 +317,8 @@ def convert(
 
 @cli.command()
 @click.option("--dataset", "dataset_path", type=click.Path(exists=True), required=True)
-@click.option("--provider", default="anthropic")
-@click.option("--model", default="claude-sonnet-4-20250514")
+@click.option("--provider", default="openai")
+@click.option("--model", default="gpt-4o")
 @click.option(
     "--system",
     "system_name",
@@ -229,7 +331,17 @@ def convert(
     default=None,
     help="Scenario for BFCL systems (student, customer, finance, healthcare, notetaker). Required for bfcl_memory_* systems.",
 )
+@click.option("--batch", is_flag=True,
+              help="Batch extraction mode (AlpsBench-style): send entire conversation as JSON, get JSON response (no tools).")
 @click.option("--max-conversations", type=int, default=None)
+@click.option("--max-total-tokens", type=int, default=None,
+              help="Stop after this many reported input plus output tokens.")
+@click.option("--max-cost-usd", type=float, default=None,
+              help="Stop after this estimated USD spend (known model pricing only).")
+@click.option("--dry-run-estimate", is_flag=True,
+              help="Print an estimated token/cost budget and do not call the provider.")
+@click.option("--save-responses", is_flag=True,
+              help="Save raw text responses, errors, and warnings in run.json (verbose).")
 @click.option("--output", type=click.Path(), default=None)
 @click.option("--api-key-env", default=None)
 def run(
@@ -238,25 +350,55 @@ def run(
     model: str,
     system_name: str,
     scenario: str | None,
+    batch: bool,
     max_conversations: int | None,
+    max_total_tokens: int | None,
+    max_cost_usd: float | None,
+    dry_run_estimate: bool,
+    save_responses: bool,
     output: str | None,
     api_key_env: str | None,
 ):
     """Run the memory extraction benchmark. Writes raw run data (no evaluation)."""
+    if max_total_tokens is not None and max_total_tokens <= 0:
+        raise click.UsageError("--max-total-tokens must be greater than zero.")
+    if max_cost_usd is not None and max_cost_usd <= 0:
+        raise click.UsageError("--max-cost-usd must be greater than zero.")
     if not output:
-        output = f"results/{_run_id(provider, model, system_name)}.json"
+        # New structure: results/{timestamp}_{provider}_{model}_{system}/run.json
+        run_dir = f"results/{_run_id(provider, model, system_name)}"
+        output = f"{run_dir}/run.json"
 
     config = RunConfig(
         provider=provider,
         model=model,
         system=system_name,
         scenario=scenario,
+        batch=batch,
         max_conversations=max_conversations,
         api_key_env=api_key_env,
+        max_total_tokens=max_total_tokens,
+        max_cost_usd=max_cost_usd,
+        save_responses=save_responses,
     )
 
     dataset = load_dataset(Path(dataset_path))
     console.print(f"Loaded dataset: {json.dumps(dataset.summary(), indent=2)}")
+
+    estimate = _estimate_run_usage(dataset, model, system_name, scenario, max_conversations)
+    console.print(
+        "Estimated usage: "
+        f"{estimate['input_tokens']:,} input + {estimate['output_tokens']:,} output = "
+        f"{estimate['total_tokens']:,} tokens across {estimate['user_turns']:,} user turns "
+        "(rough estimate; actual provider usage is recorded).",
+        style="dim",
+    )
+    if estimate["estimated_cost_usd"] is not None:
+        console.print(f"Estimated cost: ${estimate['estimated_cost_usd']:.4f}", style="dim")
+    elif max_cost_usd is not None:
+        raise click.UsageError("No pricing data is configured for this model; --max-cost-usd cannot be enforced.")
+    if dry_run_estimate:
+        return
 
     console.print(
         f"\nRunning benchmark: provider={provider}, model={model}, system={system_name}"
@@ -269,6 +411,11 @@ def run(
     except ValueError as e:
         console.print(f"\n[bold red]Error:[/bold red] {e}")
         raise SystemExit(1)
+    except Exception as e:
+        console.print(f"\n[bold red]Error:[/bold red] {e}")
+        import traceback
+        console.print(f"[dim]{traceback.format_exc()}[/dim]")
+        raise SystemExit(1)
 
     output_data = _serialize_run(run_result, config, dataset_path, dataset)
 
@@ -277,8 +424,32 @@ def run(
     output_path.write_text(json.dumps(output_data, indent=2))
     console.print(f"\nRun data written to {output_path}")
 
+    # Write run.log with summary and any errors/warnings
+    log_path = output_path.parent / "run.log"
+    _write_run_log(log_path, output_data, config, run_result)
+    if save_responses:
+        console.print(f"Run log written to {log_path}")
+
     tokens = output_data["usage"]
     _print_run_summary(output_data, tokens)
+
+    # Suggest next command
+    console.print("\n[bold cyan]Next step:[/bold cyan]")
+    # Point to the directory for cleaner UX
+    eval_target = output_path.parent if output_path.name == "run.json" else output_path
+    eval_cmd = f"llm-memory-bench evaluate {eval_target}"
+
+    # For cumulative datasets, --dataset is required
+    if dataset.ground_truth_type.value == "cumulative":
+        eval_cmd += f" \\\n  --dataset {dataset_path}"
+
+    # Suggest hybrid matcher with judge config
+    eval_cmd += " \\\n  --matcher hybrid"
+    eval_cmd += f" \\\n  --judge-provider {provider}"
+    eval_cmd += f" \\\n  --judge-model {model}"
+
+    console.print(f"[dim]{eval_cmd}[/dim]")
+    console.print("[dim]Or use --matcher embedding (fast, no LLM) or --matcher llm (most accurate)[/dim]")
 
 
 @cli.command()
@@ -306,6 +477,24 @@ def evaluate(
     api_key_env: str | None,
 ):
     """Evaluate a run file against ground truth. Reads raw run data, writes evaluation results."""
+    # Handle both directory structure (new) and flat file (old)
+    run_path = Path(run_file)
+    run_dir = None
+
+    if run_path.is_dir():
+        # New structure: results/{timestamp}_{provider}_{model}_{system}/run.json
+        run_dir = run_path
+        actual_run_file = run_path / "run.json"
+        if not actual_run_file.exists():
+            console.print(f"[bold red]Error:[/bold red] Directory {run_path} does not contain run.json")
+            raise SystemExit(1)
+        run_file = str(actual_run_file)
+    else:
+        # Old structure: results/run_{timestamp}_{provider}_{model}_{system}.json
+        # OR could be new structure with explicit path to run.json
+        if run_path.name == "run.json":
+            run_dir = run_path.parent
+
     with open(run_file) as f:
         run_data = json.load(f)
 
@@ -337,7 +526,9 @@ def evaluate(
                         ExpectedFact(fact=f["fact"], type=FactType(f.get("type", "direct")))
                         for f in gt_data
                     ])
-                    turns.append(Turn(role=turn["role"], content="", ground_truth=gt))
+                    # Use content from run file if available
+                    content = turn.get("content", "")
+                    turns.append(Turn(role=turn["role"], content=content, ground_truth=gt))
                 dataset_convs.append(Conversation(id=conv["conversation_id"], turns=turns))
             dataset = Dataset(conversations=dataset_convs)
         else:
@@ -367,6 +558,7 @@ def evaluate(
                 input_tokens=turn.get("input_tokens", 0),
                 output_tokens=turn.get("output_tokens", 0),
                 latency_ms=turn.get("latency_ms", 0),
+                response_text=turn.get("response_text", ""),
             ))
         run_result.conversation_results.append(cr)
 
@@ -393,12 +585,16 @@ def evaluate(
     type_metrics = eval_result.metrics_by_fact_type()
 
     if not output:
-        # Generate eval filename: eval_{timestamp}_{provider}_{model}_{system}_{matcher}
-        ts = datetime.now(timezone.utc).strftime("%Y%m%d-%H%M%S")
-        provider = run_config.provider
-        model_short = run_config.model.replace("/", "-").replace("@", "-")
-        system = run_config.system
-        output = f"results/eval_{ts}_{provider}_{model_short}_{system}_{matcher_name}.json"
+        if run_dir:
+            # New structure: save in run directory as eval_{matcher}.json
+            output = str(run_dir / f"eval_{matcher_name}.json")
+        else:
+            # Old structure: eval_{timestamp}_{provider}_{model}_{system}_{matcher}.json
+            ts = datetime.now(timezone.utc).strftime("%Y%m%d-%H%M%S")
+            provider = run_config.provider
+            model_short = run_config.model.replace("/", "-").replace("@", "-")
+            system = run_config.system
+            output = f"results/eval_{ts}_{provider}_{model_short}_{system}_{matcher_name}.json"
 
     dataset_info: dict = {"summary": dataset.summary()}
     if dataset_path:
@@ -524,8 +720,8 @@ def compare(result_files: tuple[str, ...]):
 @click.option("--source", type=click.Choice(["alpsbench"]), default="alpsbench")
 @click.option("--output", type=click.Path(), default="scenarios")
 @click.option("--max-scenarios", type=int, default=None)
-@click.option("--provider", default="anthropic")
-@click.option("--model", default="claude-sonnet-4-20250514")
+@click.option("--provider", default="openai")
+@click.option("--model", default="gpt-4o")
 @click.option("--english-only/--all-languages", default=True)
 @click.option("--api-key-env", default=None)
 def value_generate(
@@ -537,7 +733,7 @@ def value_generate(
     english_only: bool,
     api_key_env: str | None,
 ):
-    """Generate value benchmark scenarios from external datasets."""
+    """Generate value benchmark scenarios (LLM-generated tasks, slower but flexible)."""
     if source == "alpsbench":
         from .adapters.alpsbench_value import generate_value_scenarios
 
@@ -561,10 +757,74 @@ def value_generate(
             raise SystemExit(1)
 
 
+@cli.command(name="visualize")
+@click.argument("result_file", type=click.Path(exists=True))
+@click.option("--output", type=click.Path(), default=None, help="Output HTML path (default: same name as input with .html)")
+def visualize(result_file: str, output: str | None):
+    """Generate interactive HTML visualization of value benchmark results."""
+    from .visualize import generate_html_visualization
+
+    result_path = Path(result_file)
+    output_path = Path(output) if output else None
+
+    try:
+        html_path = generate_html_visualization(result_path, output_path)
+        console.print(f"[green]✓[/green] Visualization generated: {html_path}")
+        console.print(f"\nOpen in browser: file://{html_path.absolute()}")
+    except Exception as e:
+        console.print(f"[bold red]Error:[/bold red] {e}")
+        raise SystemExit(1)
+
+
+@cli.command(name="value-generate-quick")
+@click.option("--output", type=click.Path(), default="scenarios")
+@click.option("--max-scenarios", type=int, default=None)
+@click.option("--english-only/--all-languages", default=True)
+def value_generate_quick(
+    output: str,
+    max_scenarios: int | None,
+    english_only: bool,
+):
+    """Generate value benchmark scenarios (template-based, fast, for demos)."""
+    from .value.generator_targeted import generate_targeted_scenarios
+
+    try:
+        generate_targeted_scenarios(
+            output_dir=Path(output),
+            max_scenarios=max_scenarios,
+            english_only=english_only,
+        )
+    except Exception as e:
+        console.print(f"\n[bold red]Error:[/bold red] {e}")
+        raise SystemExit(1)
+
+
+@cli.command(name="value-visualize")
+@click.argument("result_file", type=click.Path(exists=True))
+@click.option("--output", type=click.Path(), default=None)
+def value_visualize(result_file: str, output: str | None):
+    """Generate HTML visualization of value benchmark results."""
+    from .value.visualizer import generate_html_visualization
+
+    if not output:
+        result_path = Path(result_file)
+        output = str(result_path.parent / f"{result_path.stem}.html")
+
+    result_json = json.loads(Path(result_file).read_text())
+    output_path = Path(output)
+
+    generate_html_visualization(result_json, output_path)
+
+    console.print(f"\n[bold green]✓[/bold green] Visualization generated: {output_path}")
+    console.print(f"\nOpen in browser:")
+    console.print(f"  [blue]open {output_path}[/blue]  # macOS")
+    console.print(f"  [blue]xdg-open {output_path}[/blue]  # Linux")
+
+
 @cli.command(name="value-run")
 @click.option("--scenarios", "scenarios_path", type=click.Path(exists=True), required=True)
-@click.option("--provider", default="anthropic")
-@click.option("--model", default="claude-sonnet-4-20250514")
+@click.option("--provider", default="openai")
+@click.option("--model", default="gpt-4o")
 @click.option(
     "--system",
     "system_name",
@@ -578,7 +838,11 @@ def value_generate(
 @click.option("--user-sim-model", default=None)
 @click.option("--judge-provider", default=None)
 @click.option("--judge-model", default=None)
+@click.option("--judge-during-run/--no-judge-during-run", default=True,
+              help="Use outcome validation to stop when the goal is complete.")
 @click.option("--output", type=click.Path(), default=None)
+@click.option("--visualize/--no-visualize", default=False,
+              help="Generate an HTML visualization beside the JSON result.")
 @click.option("--api-key-env", default=None)
 def value_run(
     scenarios_path: str,
@@ -592,7 +856,9 @@ def value_run(
     user_sim_model: str | None,
     judge_provider: str | None,
     judge_model: str | None,
+    judge_during_run: bool,
     output: str | None,
+    visualize: bool,
     api_key_env: str | None,
 ):
     """Run the memory value benchmark with paired trials."""
@@ -615,6 +881,7 @@ def value_run(
         user_simulator_model=user_sim_model or model,
         judge_provider=judge_provider or provider,
         judge_model=judge_model or model,
+        judge_during_run=judge_during_run,
         api_key_env=api_key_env,
     )
 
@@ -652,8 +919,73 @@ def value_run(
     for se in eval_result.scenario_evaluations:
         entry = {"scenario_id": se.scenario_id}
         for mode_name, metrics in se.metrics_by_mode.items():
+            # Keep the historical per-scenario metric shape for visualizers.
             entry[mode_name] = metrics
+            entry[f"{mode_name}_validations"] = se.validations_by_mode.get(mode_name, [])
         per_scenario.append(entry)
+
+    # Serialize raw trial data for manual review
+    raw_scenarios = []
+    scenario_map = {s.id: s for s in dataset.scenarios}
+
+    for sr in run_result.scenario_results:
+        scenario = scenario_map.get(sr.scenario_id)
+
+        raw_trials = {}
+        for mode_name, trial in sr.trials.items():
+            # Calculate token usage summary for this trial
+            agent_turns = [t for t in trial.turns if t.role == "agent"]
+            user_sim_turns = [t for t in trial.turns if t.role == "user_sim"]
+
+            token_summary = {
+                "total_input_tokens": sum(t.input_tokens for t in trial.turns),
+                "total_output_tokens": sum(t.output_tokens for t in trial.turns),
+                "total_tokens": sum(t.input_tokens + t.output_tokens for t in trial.turns),
+                "agent_input_tokens": sum(t.input_tokens for t in agent_turns),
+                "agent_output_tokens": sum(t.output_tokens for t in agent_turns),
+                "agent_total_tokens": sum(t.input_tokens + t.output_tokens for t in agent_turns),
+                "user_sim_input_tokens": sum(t.input_tokens for t in user_sim_turns),
+                "user_sim_output_tokens": sum(t.output_tokens for t in user_sim_turns),
+                "user_sim_total_tokens": sum(t.input_tokens + t.output_tokens for t in user_sim_turns),
+                "memory_overhead_tokens": trial.memory_tokens,
+                "turn_count": len(agent_turns),
+                "total_latency_ms": sum(t.latency_ms for t in trial.turns),
+            }
+
+            raw_trials[mode_name] = {
+                "system_prompt": trial.system_prompt,
+                "final_response": trial.final_response,
+                "token_summary": token_summary,
+                "turns": [
+                    {
+                        "role": t.role,
+                        "content": t.content,
+                        "tool_calls": [{"name": tc.name, "arguments": tc.arguments} for tc in t.tool_calls],
+                        "input_tokens": t.input_tokens,
+                        "output_tokens": t.output_tokens,
+                        "latency_ms": t.latency_ms,
+                    }
+                    for t in trial.turns
+                ],
+                "memory_tokens": trial.memory_tokens,
+                "goal_status": trial.goal_status,
+                "completion_turn": trial.completion_turn,
+                "completion_validations": trial.completion_validations,
+            }
+
+        # Include scenario context for manual review
+        scenario_context = {
+            "task_prompt": scenario.task_prompt if scenario else None,
+            "memory_bank": [m.model_dump() for m in scenario.memory_bank] if scenario else [],
+            "outcomes": [o.model_dump() for o in scenario.effective_outcomes()] if scenario else [],
+            "validators": [v.model_dump() for v in scenario.effective_validators()] if scenario else [],
+        }
+
+        raw_scenarios.append({
+            "scenario_id": sr.scenario_id,
+            "scenario_context": scenario_context,
+            "trials": raw_trials,
+        })
 
     output_data = {
         "config": config.model_dump(),
@@ -661,6 +993,7 @@ def value_run(
         "aggregated_metrics": aggregated,
         "per_scenario": per_scenario,
         "total_time_ms": run_result.total_time_ms,
+        "raw_conversations": raw_scenarios,  # NEW: Full trial data for manual review
     }
 
     output_path = Path(output)
@@ -668,6 +1001,196 @@ def value_run(
     output_path.write_text(json.dumps(output_data, indent=2))
     console.print(f"\nResults written to {output_path}")
 
+    if visualize:
+        from .value.visualizer import generate_html_visualization
+
+        visualization_path = output_path.with_suffix(".html")
+        generate_html_visualization(output_data, visualization_path)
+        console.print(f"Visualization written to {visualization_path}")
+
+    _print_value_metrics(aggregated)
+
+
+@cli.command(name="container-value-run")
+@click.option("--config", "config_path", type=click.Path(exists=True), required=True)
+@click.option("--scenarios", "scenarios_path", type=click.Path(exists=True), required=True)
+@click.option("--max-turns", type=int, default=10)
+@click.option("--max-scenarios", type=int, default=None)
+@click.option("--user-sim-provider", default="openai")
+@click.option("--user-sim-model", default="gpt-4o")
+@click.option("--judge-provider", default="openai")
+@click.option("--judge-model", default="gpt-4o")
+@click.option("--judge-during-run/--no-judge-during-run", default=True)
+@click.option("--output", type=click.Path(), default=None)
+@click.option("--visualize/--no-visualize", default=False)
+@click.option("--api-key-env", default=None)
+def container_value_run(
+    config_path: str,
+    scenarios_path: str,
+    max_turns: int,
+    max_scenarios: int | None,
+    user_sim_provider: str,
+    user_sim_model: str,
+    judge_provider: str,
+    judge_model: str,
+    judge_during_run: bool,
+    output: str | None,
+    visualize: bool,
+    api_key_env: str | None,
+):
+    """Run paired value trials through a real containerised integration."""
+    from .bench import RunConfig as BenchRunConfig
+    from .value.container_runner import run_container_value_benchmark
+    from .value.dataset import load_value_dataset
+    from .value.evaluator import evaluate_value_run
+
+    container_config = BenchRunConfig.from_yaml(Path(config_path))
+    if not container_config.integration_profile:
+        raise click.UsageError(
+            "container-value-run requires a config with integration.profile"
+        )
+
+    value_config = ValueRunConfig(
+        provider="anthropic",
+        model=container_config.model,
+        system=container_config.system_name,
+        injection_mode="integration",
+        max_turns=max_turns,
+        max_scenarios=max_scenarios,
+        user_simulator_provider=user_sim_provider,
+        user_simulator_model=user_sim_model,
+        judge_provider=judge_provider,
+        judge_model=judge_model,
+        judge_during_run=judge_during_run,
+        api_key_env=api_key_env,
+    )
+    dataset = load_value_dataset(Path(scenarios_path))
+    console.print(f"Loaded value dataset: {json.dumps(dataset.summary(), indent=2)}")
+    console.print(
+        f"\nRunning container value benchmark: host={container_config.host_name}, "
+        f"model={container_config.model}, integration={container_config.integration_profile}, "
+        f"max_turns={max_turns}"
+    )
+
+    try:
+        run_result = asyncio.run(
+            run_container_value_benchmark(dataset, container_config, value_config)
+        )
+    except ProviderError as exc:
+        console.print(f"\n[bold red]Provider error:[/bold red] {exc}")
+        raise SystemExit(1)
+
+    judge_config = RunConfig(
+        provider=judge_provider,
+        model=judge_model,
+        api_key_env=api_key_env,
+    )
+    console.print(
+        f"\nBenchmark complete ({run_result.total_time_ms:.0f}ms). "
+        f"Evaluating with judge: {judge_provider}/{judge_model}"
+    )
+    try:
+        eval_result = asyncio.run(evaluate_value_run(dataset, run_result, judge_config))
+    except ProviderError as exc:
+        console.print(f"\n[bold red]Judge error:[/bold red] {exc}")
+        raise SystemExit(1)
+
+    aggregated = eval_result.aggregate()
+    per_scenario = []
+    for scenario_eval in eval_result.scenario_evaluations:
+        entry = {"scenario_id": scenario_eval.scenario_id}
+        for mode_name, metrics in scenario_eval.metrics_by_mode.items():
+            entry[mode_name] = metrics
+            entry[f"{mode_name}_validations"] = scenario_eval.validations_by_mode.get(
+                mode_name, []
+            )
+        per_scenario.append(entry)
+
+    scenario_map = {scenario.id: scenario for scenario in dataset.scenarios}
+    raw_scenarios = []
+    for scenario_result in run_result.scenario_results:
+        scenario = scenario_map.get(scenario_result.scenario_id)
+        raw_trials = {}
+        for mode_name, trial in scenario_result.trials.items():
+            agent_turns = [turn for turn in trial.turns if turn.role == "agent"]
+            raw_trials[mode_name] = {
+                "system_prompt": trial.system_prompt,
+                "final_response": trial.final_response,
+                "memory_tokens": trial.memory_tokens,
+                "goal_status": trial.goal_status,
+                "completion_turn": trial.completion_turn,
+                "completion_validations": trial.completion_validations,
+                "token_summary": {
+                    "agent_input_tokens": sum(turn.input_tokens for turn in agent_turns),
+                    "agent_output_tokens": sum(turn.output_tokens for turn in agent_turns),
+                    "agent_total_tokens": trial.total_agent_tokens,
+                    "turn_count": trial.turn_count,
+                    "total_latency_ms": sum(turn.latency_ms for turn in trial.turns),
+                },
+                "turns": [
+                    {
+                        "role": turn.role,
+                        "content": turn.content,
+                        "tool_calls": [
+                            {"name": call.name, "arguments": call.arguments}
+                            for call in turn.tool_calls
+                        ],
+                        "integration_events": turn.integration_events,
+                        "input_tokens": turn.input_tokens,
+                        "output_tokens": turn.output_tokens,
+                        "latency_ms": turn.latency_ms,
+                    }
+                    for turn in trial.turns
+                ],
+            }
+        raw_scenarios.append({
+            "scenario_id": scenario_result.scenario_id,
+            "scenario_context": {
+                "task_prompt": scenario.task_prompt if scenario else None,
+                "memory_bank": [memory.model_dump() for memory in scenario.memory_bank]
+                if scenario
+                else [],
+                "outcomes": [outcome.model_dump() for outcome in scenario.effective_outcomes()]
+                if scenario
+                else [],
+            },
+            "trials": raw_trials,
+        })
+
+    output_data = {
+        "execution": "container",
+        "config": value_config.model_dump(),
+        "execution_metadata": run_result.metadata,
+        "container": {
+            "host": {
+                "name": container_config.host_name,
+                "version": container_config.host_version,
+            },
+            "model": container_config.model,
+            "integration_profile": container_config.integration_profile,
+            "dataset": str(Path(scenarios_path).resolve()),
+        },
+        "dataset_summary": dataset.summary(),
+        "aggregated_metrics": aggregated,
+        "per_scenario": per_scenario,
+        "total_time_ms": run_result.total_time_ms,
+        "raw_conversations": raw_scenarios,
+    }
+    if not output:
+        model_short = container_config.model.replace("/", "-").replace("@", "-")
+        ts = datetime.now(timezone.utc).strftime("%Y%m%d-%H%M%S")
+        output = f"results/container_value_{ts}_{model_short}.json"
+
+    output_path = Path(output)
+    output_path.parent.mkdir(parents=True, exist_ok=True)
+    output_path.write_text(json.dumps(output_data, indent=2))
+    console.print(f"\nResults written to {output_path}")
+    if visualize:
+        from .value.visualizer import generate_html_visualization
+
+        visualization_path = output_path.with_suffix(".html")
+        generate_html_visualization(output_data, visualization_path)
+        console.print(f"Visualization written to {visualization_path}")
     _print_value_metrics(aggregated)
 
 
@@ -738,6 +1261,8 @@ def _print_run_summary(run_data: dict, tokens: dict):
     table.add_row("total_tokens", f"{tokens['total_tokens']:,}")
     if "estimated_cost_usd" in tokens:
         table.add_row("estimated_cost", f"${tokens['estimated_cost_usd']:.4f}")
+    if run_data.get("stop_reason"):
+        table.add_row("stopped", run_data["stop_reason"])
     console.print(table)
 
 
@@ -776,6 +1301,14 @@ def _print_metrics_table(metrics: dict, type_metrics: dict, tokens: dict | None 
         if key in metrics:
             val = metrics[key]
             table.add_row(key, f"{val:.4f}")
+
+    # Add AlpsBench metrics if present
+    if "alpsbench_blended_score" in metrics:
+        table.add_section()
+        table.add_row("alpsbench_blended_score", f"{metrics['alpsbench_blended_score']:.4f}", style="bold green")
+        table.add_row("  ↳ avg_pair_score (60%)", f"{metrics['alpsbench_avg_pair_score']:.4f}")
+        table.add_row("  ↳ F1 coverage (40%)", f"{metrics.get('cumulative_extraction_f1', metrics.get('per_turn_extraction_f1', 0)):.4f}")
+        table.add_row("  ↳ matched_pairs", str(metrics['alpsbench_matched_pairs']))
 
     table.add_section()
     # Format counts nicely (show decimals for partial matches)

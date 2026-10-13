@@ -1,0 +1,337 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Memory Value Benchmark Visualization</title>
+    <style>
+        * { margin: 0; padding: 0; box-sizing: border-box; }
+        body {
+            font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+            background: #f5f5f5;
+            padding: 20px;
+        }
+        .header {
+            background: white;
+            padding: 24px;
+            border-radius: 8px;
+            margin-bottom: 20px;
+            box-shadow: 0 1px 3px rgba(0,0,0,0.1);
+        }
+        h1 { font-size: 24px; margin-bottom: 8px; }
+        .header-info { color: #666; font-size: 14px; }
+
+        .scenario-card {
+            background: white;
+            border-radius: 8px;
+            margin-bottom: 24px;
+            overflow: hidden;
+            box-shadow: 0 1px 3px rgba(0,0,0,0.1);
+        }
+        .scenario-header {
+            background: #f9fafb;
+            padding: 16px 20px;
+            border-bottom: 1px solid #e5e7eb;
+        }
+        .scenario-title { font-weight: 600; margin-bottom: 8px; }
+        .scenario-meta { font-size: 13px; color: #666; }
+        .memory-pills {
+            margin-top: 8px;
+            display: flex;
+            gap: 8px;
+            flex-wrap: wrap;
+        }
+        .memory-pill {
+            background: #3b82f6;
+            color: white;
+            padding: 4px 10px;
+            border-radius: 12px;
+            font-size: 12px;
+        }
+
+        .comparison {
+            display: grid;
+            grid-template-columns: 1fr 1fr;
+            gap: 1px;
+            background: #e5e7eb;
+        }
+        .trial-pane {
+            background: white;
+            padding: 20px;
+        }
+        .trial-pane.baseline { background: #fef2f2; }
+        .trial-pane.memory { background: #eff6ff; }
+
+        .trial-header {
+            font-weight: 600;
+            margin-bottom: 12px;
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+        }
+        .trial-badge {
+            padding: 4px 8px;
+            border-radius: 4px;
+            font-size: 11px;
+            text-transform: uppercase;
+            letter-spacing: 0.5px;
+        }
+        .trial-badge.baseline { background: #ef4444; color: white; }
+        .trial-badge.memory { background: #3b82f6; color: white; }
+
+        .system-prompt {
+            background: #f9fafb;
+            border-left: 3px solid #9ca3af;
+            padding: 8px 12px;
+            margin-bottom: 16px;
+            font-size: 12px;
+            color: #4b5563;
+            font-family: 'Courier New', monospace;
+            white-space: pre-wrap;
+            max-height: 80px;
+            overflow-y: auto;
+        }
+        .trial-pane.memory .system-prompt { border-left-color: #3b82f6; }
+
+        .chat {
+            margin-bottom: 16px;
+            min-height: 200px;
+        }
+        .turn {
+            margin-bottom: 16px;
+        }
+        .turn-label {
+            font-size: 11px;
+            color: #6b7280;
+            margin-bottom: 4px;
+            font-weight: 500;
+            text-transform: uppercase;
+        }
+        .bubble {
+            padding: 10px 14px;
+            border-radius: 12px;
+            display: inline-block;
+            max-width: 90%;
+        }
+        .turn.user .bubble {
+            background: #e5e7eb;
+            color: #1f2937;
+        }
+        .turn.agent .bubble {
+            background: #3b82f6;
+            color: white;
+        }
+        .turn.user_sim .bubble {
+            background: #f3f4f6;
+            color: #1f2937;
+            border: 1px solid #d1d5db;
+        }
+
+        .metrics {
+            background: #f9fafb;
+            padding: 12px;
+            border-radius: 6px;
+            font-size: 13px;
+        }
+        .metric-row {
+            display: flex;
+            justify-content: space-between;
+            padding: 4px 0;
+        }
+        .metric-label { color: #6b7280; }
+        .metric-value {
+            font-weight: 600;
+            font-family: monospace;
+        }
+        .metric-value.positive { color: #10b981; }
+        .metric-value.negative { color: #ef4444; }
+        .metric-value.neutral { color: #6b7280; }
+
+        .quality-score {
+            text-align: center;
+            padding: 16px;
+            border-top: 1px solid #e5e7eb;
+            margin-top: 12px;
+        }
+        .quality-number {
+            font-size: 32px;
+            font-weight: bold;
+        }
+        .quality-label {
+            font-size: 12px;
+            color: #6b7280;
+            margin-top: 4px;
+        }
+
+        .nav-buttons {
+            position: fixed;
+            bottom: 20px;
+            right: 20px;
+            display: flex;
+            gap: 8px;
+        }
+        .nav-button {
+            background: white;
+            border: 1px solid #d1d5db;
+            padding: 8px 16px;
+            border-radius: 6px;
+            cursor: pointer;
+            font-size: 14px;
+        }
+        .nav-button:hover {
+            background: #f9fafb;
+        }
+    </style>
+</head>
+<body>
+    <div class="header">
+        <h1>Memory Value Benchmark Results</h1>
+        <div class="header-info" id="header-info">Loading...</div>
+    </div>
+
+    <div id="scenarios-container"></div>
+
+    <div class="nav-buttons">
+        <button class="nav-button" onclick="scrollToTop()">↑ Top</button>
+    </div>
+
+    <script>
+        // Data will be injected here
+        const DATA = {{DATA_PLACEHOLDER}};
+
+        function scrollToTop() {
+            window.scrollTo({ top: 0, behavior: 'smooth' });
+        }
+
+        function renderScenario(scenario, metrics) {
+            const context = scenario.scenario_context || {};
+            const trials = scenario.trials || {};
+
+            const metricData = metrics?.find(m => m.scenario_id === scenario.scenario_id) || {};
+
+            return `
+                <div class="scenario-card">
+                    <div class="scenario-header">
+                        <div class="scenario-title">${context.task_prompt || 'Unknown task'}</div>
+                        <div class="scenario-meta">
+                            Scenario ID: ${scenario.scenario_id}
+                            ${context.value_category ? ` • Category: ${context.value_category}` : ''}
+                        </div>
+                        ${context.memory_bank?.length ? `
+                            <div class="memory-pills">
+                                ${context.memory_bank.map(m => `<span class="memory-pill">${m.fact}</span>`).join('')}
+                            </div>
+                        ` : ''}
+                    </div>
+
+                    <div class="comparison">
+                        ${renderTrial('baseline', trials.baseline, metricData.memory_prompt)}
+                        ${renderTrial('memory', trials.memory_prompt, metricData.memory_prompt)}
+                    </div>
+                </div>
+            `;
+        }
+
+        function renderTrial(mode, trial, metrics) {
+            if (!trial) return `<div class="trial-pane ${mode}">No data</div>`;
+
+            const turns = trial.turns || [];
+            const qualityKey = mode === 'baseline' ? 'quality_baseline' : 'quality_memory';
+            const quality = metrics?.[qualityKey];
+
+            return `
+                <div class="trial-pane ${mode}">
+                    <div class="trial-header">
+                        <span>${mode === 'baseline' ? 'Without Memory' : 'With Memory'}</span>
+                        <span class="trial-badge ${mode}">${mode}</span>
+                    </div>
+
+                    ${trial.system_prompt ? `
+                        <div class="system-prompt">${escapeHtml(trial.system_prompt.substring(0, 200))}${trial.system_prompt.length > 200 ? '...' : ''}</div>
+                    ` : ''}
+
+                    <div class="chat">
+                        ${turns.map(t => `
+                            <div class="turn ${t.role}">
+                                <div class="turn-label">${t.role.replace('_', ' ')}</div>
+                                <div class="bubble">${escapeHtml(t.content)}</div>
+                            </div>
+                        `).join('')}
+                    </div>
+
+                    <div class="metrics">
+                        ${trial.token_summary ? `
+                            <div class="metric-row">
+                                <span class="metric-label">Total tokens</span>
+                                <span class="metric-value neutral">${trial.token_summary.total_tokens.toLocaleString()}</span>
+                            </div>
+                            <div class="metric-row">
+                                <span class="metric-label">├─ Agent</span>
+                                <span class="metric-value neutral">${trial.token_summary.agent_total_tokens.toLocaleString()}</span>
+                            </div>
+                            <div class="metric-row">
+                                <span class="metric-label">└─ User sim</span>
+                                <span class="metric-value neutral">${trial.token_summary.user_sim_total_tokens.toLocaleString()}</span>
+                            </div>
+                            <div class="metric-row">
+                                <span class="metric-label">Turns</span>
+                                <span class="metric-value neutral">${trial.token_summary.turn_count}</span>
+                            </div>
+                            ${trial.token_summary.memory_overhead_tokens ? `
+                                <div class="metric-row">
+                                    <span class="metric-label">Memory overhead</span>
+                                    <span class="metric-value neutral">${trial.token_summary.memory_overhead_tokens} tokens</span>
+                                </div>
+                            ` : ''}
+                            <div class="metric-row">
+                                <span class="metric-label">Latency</span>
+                                <span class="metric-value neutral">${(trial.token_summary.total_latency_ms / 1000).toFixed(1)}s</span>
+                            </div>
+                        ` : `
+                            <div class="metric-row">
+                                <span class="metric-label">Tokens</span>
+                                <span class="metric-value neutral">${trial.turns.reduce((sum, t) => sum + t.input_tokens + t.output_tokens, 0)}</span>
+                            </div>
+                            <div class="metric-row">
+                                <span class="metric-label">Turns</span>
+                                <span class="metric-value neutral">${turns.filter(t => t.role === 'agent').length}</span>
+                            </div>
+                            ${trial.memory_tokens ? `
+                                <div class="metric-row">
+                                    <span class="metric-label">Memory overhead</span>
+                                    <span class="metric-value neutral">${trial.memory_tokens} tokens</span>
+                                </div>
+                            ` : ''}
+                        `}
+                    </div>
+
+                    ${quality !== undefined ? `
+                        <div class="quality-score">
+                            <div class="quality-number" style="color: ${quality >= 0.7 ? '#10b981' : quality >= 0.4 ? '#f59e0b' : '#ef4444'}">${quality.toFixed(1)}</div>
+                            <div class="quality-label">Quality Score</div>
+                        </div>
+                    ` : ''}
+                </div>
+            `;
+        }
+
+        function escapeHtml(text) {
+            const div = document.createElement('div');
+            div.textContent = text;
+            return div.innerHTML;
+        }
+
+        function render() {
+            const headerInfo = document.getElementById('header-info');
+            headerInfo.textContent = `${DATA.config.provider}/${DATA.config.model} • ${DATA.raw_conversations?.length || 0} scenarios • ${DATA.config.injection_mode} mode`;
+
+            const container = document.getElementById('scenarios-container');
+            container.innerHTML = (DATA.raw_conversations || [])
+                .map(scenario => renderScenario(scenario, DATA.per_scenario))
+                .join('');
+        }
+
+        render();
+    </script>
+</body>
+</html>

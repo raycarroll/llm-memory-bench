@@ -24,8 +24,12 @@ class LLMMatcher(FactMatcher):
     def __init__(self, provider: LLMProvider):
         self.provider = provider
 
-    async def match(self, expected: str, stored: str) -> MatchVerdict:
-        prompt = JUDGE_PROMPT.format(expected=expected, stored=stored)
+    async def match(self, expected: str | dict, stored: str | dict) -> MatchVerdict:
+        # Extract text from dicts (AlpsBench format)
+        expected_text = expected.get("fact") if isinstance(expected, dict) else expected
+        stored_text = stored.get("value") if isinstance(stored, dict) else stored
+
+        prompt = JUDGE_PROMPT.format(expected=expected_text, stored=stored_text)
         response = await self.provider.generate(
             messages=[{"role": "user", "content": prompt}],
             tools=[],

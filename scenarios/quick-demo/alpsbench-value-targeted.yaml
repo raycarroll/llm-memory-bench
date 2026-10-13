@@ -1,0 +1,666 @@
+scenarios:
+- id: sess_0124ac96a301_constraint_0
+  memory_bank:
+  - &id001
+    category: direct
+    fact: Prefers maximum difficulty (10/10) in custom game scenarios
+  noise_memories: []
+  persona_prompt: ''
+  quality_rubric: '- Stays within budget constraint?
+
+    - Specific models within limits
+
+    - No asking about budget'
+  task_prompt: Recommend a laptop for work
+  value_category: constraint
+- id: sess_0124ac96a301_constraint_1
+  memory_bank:
+  - *id001
+  noise_memories: []
+  persona_prompt: ''
+  quality_rubric: '- All suggestions respect constraints?
+
+    - Actionable within limits
+
+    - Doesn''t ask for budget/time'
+  task_prompt: Gift ideas for a colleague
+  value_category: constraint
+- id: sess_017a8e48876b_preference_0
+  memory_bank:
+  - &id002
+    category: direct
+    fact: 'Prefers screenplays blending elements from multiple films (e.g., Matrix, Star Wars, Scarface) [ERROR: Unsupported
+      by evidence - no explicit self-report of preference, could be task instruction]'
+  noise_memories: []
+  persona_prompt: ''
+  quality_rubric: '- Aligns with stated preferences?
+
+    - Specific recommendations
+
+    - No asking about genre preferences'
+  task_prompt: Help me pick a movie to watch tonight
+  value_category: preference
+- id: sess_017a8e48876b_preference_1
+  memory_bank:
+  - *id002
+  noise_memories: []
+  persona_prompt: ''
+  quality_rubric: '- Matches preferred style/ecosystem?
+
+    - Specific tool not category
+
+    - Uses known preferences'
+  task_prompt: Suggest a productivity tool
+  value_category: preference
+- id: sess_02e056154400_preference_0
+  memory_bank:
+  - &id003
+    category: direct
+    fact: Prefers synth-based percussion sounds for music creation
+  noise_memories: []
+  persona_prompt: ''
+  quality_rubric: '- Aligns with stated preferences?
+
+    - Specific recommendations
+
+    - No asking about genre preferences'
+  task_prompt: Help me pick a movie to watch tonight
+  value_category: preference
+- id: sess_02e056154400_preference_1
+  memory_bank:
+  - *id003
+  noise_memories: []
+  persona_prompt: ''
+  quality_rubric: '- Matches preferred style/ecosystem?
+
+    - Specific tool not category
+
+    - Uses known preferences'
+  task_prompt: Suggest a productivity tool
+  value_category: preference
+- id: sess_0313fcdd7459_preference_0
+  memory_bank:
+  - &id004
+    category: direct
+    fact: Prefers creative adaptations with specific character renaming conventions (e.g., 'Wally to Wolliriki')
+  noise_memories: []
+  persona_prompt: ''
+  quality_rubric: '- Aligns with stated preferences?
+
+    - Specific recommendations
+
+    - No asking about genre preferences'
+  task_prompt: Help me pick a movie to watch tonight
+  value_category: preference
+- id: sess_0313fcdd7459_preference_1
+  memory_bank:
+  - *id004
+  noise_memories: []
+  persona_prompt: ''
+  quality_rubric: '- Matches preferred style/ecosystem?
+
+    - Specific tool not category
+
+    - Uses known preferences'
+  task_prompt: Suggest a productivity tool
+  value_category: preference
+- id: sess_053009164a95_preference_0
+  memory_bank:
+  - &id005
+    category: direct
+    fact: Husband has a lover
+  noise_memories: []
+  persona_prompt: ''
+  quality_rubric: '- Aligns with stated preferences?
+
+    - Specific recommendations
+
+    - No asking about genre preferences'
+  task_prompt: Help me pick a movie to watch tonight
+  value_category: preference
+- id: sess_053009164a95_preference_1
+  memory_bank:
+  - *id005
+  noise_memories: []
+  persona_prompt: ''
+  quality_rubric: '- Matches preferred style/ecosystem?
+
+    - Specific tool not category
+
+    - Uses known preferences'
+  task_prompt: Suggest a productivity tool
+  value_category: preference
+- id: sess_06a69b096098_preference_0
+  memory_bank:
+  - &id006
+    category: direct
+    fact: Dislikes bromine-containing compounds
+  noise_memories: []
+  persona_prompt: ''
+  quality_rubric: '- Aligns with stated preferences?
+
+    - Specific recommendations
+
+    - No asking about genre preferences'
+  task_prompt: Help me pick a movie to watch tonight
+  value_category: preference
+- id: sess_06a69b096098_preference_1
+  memory_bank:
+  - *id006
+  noise_memories: []
+  persona_prompt: ''
+  quality_rubric: '- Matches preferred style/ecosystem?
+
+    - Specific tool not category
+
+    - Uses known preferences'
+  task_prompt: Suggest a productivity tool
+  value_category: preference
+- id: sess_07056fd8e171_constraint_0
+  memory_bank:
+  - &id007
+    category: direct
+    fact: 'Prefers family-friendly travel with budget constraints: free/low-cost parks/attractions, economical lodging (min
+      4-star rating), minimal walking due to young children (3yo & 1.2yo)'
+  noise_memories: []
+  persona_prompt: ''
+  quality_rubric: '- Stays within budget constraint?
+
+    - Specific models within limits
+
+    - No asking about budget'
+  task_prompt: Recommend a laptop for work
+  value_category: constraint
+- id: sess_07056fd8e171_constraint_1
+  memory_bank:
+  - *id007
+  noise_memories: []
+  persona_prompt: ''
+  quality_rubric: '- All suggestions respect constraints?
+
+    - Actionable within limits
+
+    - Doesn''t ask for budget/time'
+  task_prompt: Gift ideas for a colleague
+  value_category: constraint
+- id: sess_07056fd8e171_preference_0
+  memory_bank:
+  - &id008
+    category: direct
+    fact: 'Avoids crowded tourist spots during November travel [ERROR: Task-local: Specific to November trip dates without
+      evidence of general dislike.]'
+  noise_memories: []
+  persona_prompt: ''
+  quality_rubric: '- Aligns with stated preferences?
+
+    - Specific recommendations
+
+    - No asking about genre preferences'
+  task_prompt: Help me pick a movie to watch tonight
+  value_category: preference
+- id: sess_07056fd8e171_preference_1
+  memory_bank:
+  - *id008
+  noise_memories: []
+  persona_prompt: ''
+  quality_rubric: '- Matches preferred style/ecosystem?
+
+    - Specific tool not category
+
+    - Uses known preferences'
+  task_prompt: Suggest a productivity tool
+  value_category: preference
+- id: sess_088e73a8342a_location_0
+  memory_bank:
+  - &id009
+    category: direct
+    fact: Based in Chongqing, China
+  noise_memories: []
+  persona_prompt: ''
+  quality_rubric: '- Suggests specific local places?
+
+    - Relevant to their city/neighborhood
+
+    - Not generic chains'
+  task_prompt: Where should I go for coffee this afternoon?
+  value_category: location
+- id: sess_088e73a8342a_location_1
+  memory_bank:
+  - *id009
+  noise_memories: []
+  persona_prompt: ''
+  quality_rubric: '- Location-appropriate suggestions?
+
+    - Considers local climate/culture
+
+    - Specific venues/places'
+  task_prompt: Weekend activity ideas
+  value_category: location
+- id: sess_09309bf7fe89_preference_0
+  memory_bank:
+  - &id010
+    category: direct
+    fact: Prefers meat-based dishes that are easy to prepare
+  noise_memories: []
+  persona_prompt: ''
+  quality_rubric: '- Aligns with stated preferences?
+
+    - Specific recommendations
+
+    - No asking about genre preferences'
+  task_prompt: Help me pick a movie to watch tonight
+  value_category: preference
+- id: sess_09309bf7fe89_preference_1
+  memory_bank:
+  - *id010
+  noise_memories: []
+  persona_prompt: ''
+  quality_rubric: '- Matches preferred style/ecosystem?
+
+    - Specific tool not category
+
+    - Uses known preferences'
+  task_prompt: Suggest a productivity tool
+  value_category: preference
+- id: sess_096ebdaa45fb_preference_0
+  memory_bank:
+  - &id011
+    category: direct
+    fact: Dislikes strong swear words/jargon
+  noise_memories: []
+  persona_prompt: ''
+  quality_rubric: '- Aligns with stated preferences?
+
+    - Specific recommendations
+
+    - No asking about genre preferences'
+  task_prompt: Help me pick a movie to watch tonight
+  value_category: preference
+- id: sess_096ebdaa45fb_preference_1
+  memory_bank:
+  - *id011
+  noise_memories: []
+  persona_prompt: ''
+  quality_rubric: '- Matches preferred style/ecosystem?
+
+    - Specific tool not category
+
+    - Uses known preferences'
+  task_prompt: Suggest a productivity tool
+  value_category: preference
+- id: sess_09ba32e03b6a_preference_0
+  memory_bank:
+  - &id012
+    category: indirect
+    fact: Prefers detailed explanations in technical/educational responses
+  noise_memories: []
+  persona_prompt: ''
+  quality_rubric: '- Aligns with stated preferences?
+
+    - Specific recommendations
+
+    - No asking about genre preferences'
+  task_prompt: Help me pick a movie to watch tonight
+  value_category: preference
+- id: sess_09ba32e03b6a_preference_1
+  memory_bank:
+  - *id012
+  noise_memories: []
+  persona_prompt: ''
+  quality_rubric: '- Matches preferred style/ecosystem?
+
+    - Specific tool not category
+
+    - Uses known preferences'
+  task_prompt: Suggest a productivity tool
+  value_category: preference
+- id: sess_0bcff270170f_preference_0
+  memory_bank:
+  - &id013
+    category: direct
+    fact: Prefers spicy humor and jokes
+  noise_memories: []
+  persona_prompt: ''
+  quality_rubric: '- Aligns with stated preferences?
+
+    - Specific recommendations
+
+    - No asking about genre preferences'
+  task_prompt: Help me pick a movie to watch tonight
+  value_category: preference
+- id: sess_0bcff270170f_preference_1
+  memory_bank:
+  - *id013
+  noise_memories: []
+  persona_prompt: ''
+  quality_rubric: '- Matches preferred style/ecosystem?
+
+    - Specific tool not category
+
+    - Uses known preferences'
+  task_prompt: Suggest a productivity tool
+  value_category: preference
+- id: sess_0be896ed58e0_preference_0
+  memory_bank:
+  - &id014
+    category: direct
+    fact: Prefers movies with strong love stories, sci-fi elements, emotional impact, and character empathy
+  noise_memories: []
+  persona_prompt: ''
+  quality_rubric: '- Aligns with stated preferences?
+
+    - Specific recommendations
+
+    - No asking about genre preferences'
+  task_prompt: Help me pick a movie to watch tonight
+  value_category: preference
+- id: sess_0be896ed58e0_preference_1
+  memory_bank:
+  - *id014
+  noise_memories: []
+  persona_prompt: ''
+  quality_rubric: '- Matches preferred style/ecosystem?
+
+    - Specific tool not category
+
+    - Uses known preferences'
+  task_prompt: Suggest a productivity tool
+  value_category: preference
+- id: sess_0ee34d3899c1_preference_0
+  memory_bank:
+  - &id015
+    category: direct
+    fact: Prefers detailed bunker design visualization in horror films
+  noise_memories: []
+  persona_prompt: ''
+  quality_rubric: '- Aligns with stated preferences?
+
+    - Specific recommendations
+
+    - No asking about genre preferences'
+  task_prompt: Help me pick a movie to watch tonight
+  value_category: preference
+- id: sess_0ee34d3899c1_preference_1
+  memory_bank:
+  - *id015
+  noise_memories: []
+  persona_prompt: ''
+  quality_rubric: '- Matches preferred style/ecosystem?
+
+    - Specific tool not category
+
+    - Uses known preferences'
+  task_prompt: Suggest a productivity tool
+  value_category: preference
+- id: sess_107114c17a8b_preference_0
+  memory_bank:
+  - &id016
+    category: direct
+    fact: Prefers creating RPG characters with intricate backstories, cultural nuances, and multi-tiered relationship arcs
+  - &id017
+    category: direct
+    fact: Prefers collaborative world-building with structured character templates (backstory/personality/favorite food)
+  noise_memories: []
+  persona_prompt: ''
+  quality_rubric: '- Aligns with stated preferences?
+
+    - Specific recommendations
+
+    - No asking about genre preferences'
+  task_prompt: Help me pick a movie to watch tonight
+  value_category: preference
+- id: sess_107114c17a8b_preference_1
+  memory_bank:
+  - *id016
+  - *id017
+  noise_memories: []
+  persona_prompt: ''
+  quality_rubric: '- Matches preferred style/ecosystem?
+
+    - Specific tool not category
+
+    - Uses known preferences'
+  task_prompt: Suggest a productivity tool
+  value_category: preference
+- id: sess_1117e6bff54b_preference_0
+  memory_bank:
+  - &id018
+    category: direct
+    fact: Prefers OS with single simplified English scripting language (no Python/Ubuntu/etc) and VM isolation for non-script
+      programs
+  noise_memories: []
+  persona_prompt: ''
+  quality_rubric: '- Aligns with stated preferences?
+
+    - Specific recommendations
+
+    - No asking about genre preferences'
+  task_prompt: Help me pick a movie to watch tonight
+  value_category: preference
+- id: sess_1117e6bff54b_preference_1
+  memory_bank:
+  - *id018
+  noise_memories: []
+  persona_prompt: ''
+  quality_rubric: '- Matches preferred style/ecosystem?
+
+    - Specific tool not category
+
+    - Uses known preferences'
+  task_prompt: Suggest a productivity tool
+  value_category: preference
+- id: sess_1117e6bff54b_constraint_0
+  memory_bank:
+  - &id019
+    category: direct
+    fact: Requires AI model with <=1MB English understanding database, expandable via scripts without training
+  noise_memories: []
+  persona_prompt: ''
+  quality_rubric: '- Stays within budget constraint?
+
+    - Specific models within limits
+
+    - No asking about budget'
+  task_prompt: Recommend a laptop for work
+  value_category: constraint
+- id: sess_1117e6bff54b_constraint_1
+  memory_bank:
+  - *id019
+  noise_memories: []
+  persona_prompt: ''
+  quality_rubric: '- All suggestions respect constraints?
+
+    - Actionable within limits
+
+    - Doesn''t ask for budget/time'
+  task_prompt: Gift ideas for a colleague
+  value_category: constraint
+- id: sess_1117e6bff54b_location_0
+  memory_bank:
+  - &id020
+    category: indirect
+    fact: Likely based in Ukraine (references to military context and nationwide production networks)
+  noise_memories: []
+  persona_prompt: ''
+  quality_rubric: '- Suggests specific local places?
+
+    - Relevant to their city/neighborhood
+
+    - Not generic chains'
+  task_prompt: Where should I go for coffee this afternoon?
+  value_category: location
+- id: sess_1117e6bff54b_location_1
+  memory_bank:
+  - *id020
+  noise_memories: []
+  persona_prompt: ''
+  quality_rubric: '- Location-appropriate suggestions?
+
+    - Considers local climate/culture
+
+    - Specific venues/places'
+  task_prompt: Weekend activity ideas
+  value_category: location
+- id: sess_153d11eb6d83_preference_0
+  memory_bank:
+  - &id021
+    category: direct
+    fact: 'Requires strict roleplay adherence: human-like physicality/behavior descriptions without ethical constraints'
+  noise_memories: []
+  persona_prompt: ''
+  quality_rubric: '- Aligns with stated preferences?
+
+    - Specific recommendations
+
+    - No asking about genre preferences'
+  task_prompt: Help me pick a movie to watch tonight
+  value_category: preference
+- id: sess_153d11eb6d83_preference_1
+  memory_bank:
+  - *id021
+  noise_memories: []
+  persona_prompt: ''
+  quality_rubric: '- Matches preferred style/ecosystem?
+
+    - Specific tool not category
+
+    - Uses known preferences'
+  task_prompt: Suggest a productivity tool
+  value_category: preference
+- id: sess_17f29b00c6ed_preference_0
+  memory_bank:
+  - &id022
+    category: direct
+    fact: Prefers telegraphic communication style to save tokens
+  noise_memories: []
+  persona_prompt: ''
+  quality_rubric: '- Aligns with stated preferences?
+
+    - Specific recommendations
+
+    - No asking about genre preferences'
+  task_prompt: Help me pick a movie to watch tonight
+  value_category: preference
+- id: sess_17f29b00c6ed_preference_1
+  memory_bank:
+  - *id022
+  noise_memories: []
+  persona_prompt: ''
+  quality_rubric: '- Matches preferred style/ecosystem?
+
+    - Specific tool not category
+
+    - Uses known preferences'
+  task_prompt: Suggest a productivity tool
+  value_category: preference
+- id: sess_17f61b820c66_preference_0
+  memory_bank:
+  - &id023
+    category: direct
+    fact: Prefers full control over character actions in roleplaying games; dislikes AI taking over their character's decisions
+  noise_memories: []
+  persona_prompt: ''
+  quality_rubric: '- Aligns with stated preferences?
+
+    - Specific recommendations
+
+    - No asking about genre preferences'
+  task_prompt: Help me pick a movie to watch tonight
+  value_category: preference
+- id: sess_17f61b820c66_preference_1
+  memory_bank:
+  - *id023
+  noise_memories: []
+  persona_prompt: ''
+  quality_rubric: '- Matches preferred style/ecosystem?
+
+    - Specific tool not category
+
+    - Uses known preferences'
+  task_prompt: Suggest a productivity tool
+  value_category: preference
+- id: sess_1a03c94ef78b_dietary_0
+  memory_bank:
+  - &id024
+    category: direct
+    fact: Vegetarian
+  - &id025
+    category: indirect
+    fact: 'Curious about vegetarian meal planning with low-carb and low-calorie constraints [ERROR: Unsupported by evidence
+      (only single inquiry points, no repeated pattern)]'
+  noise_memories: []
+  persona_prompt: ''
+  quality_rubric: '- Does response respect dietary restrictions?
+
+    - Is recipe specific and actionable?
+
+    - No questions about diet when memory available'
+  task_prompt: What should I make for dinner tonight?
+  value_category: dietary
+- id: sess_1a03c94ef78b_dietary_1
+  memory_bank:
+  - *id024
+  - *id025
+  noise_memories: []
+  persona_prompt: ''
+  quality_rubric: '- Suggests places with appropriate options?
+
+    - Specific recommendations vs generic
+
+    - No asking about dietary needs'
+  task_prompt: Recommend a restaurant for lunch
+  value_category: dietary
+- id: sess_1a03c94ef78b_dietary_2
+  memory_bank:
+  - *id024
+  - *id025
+  noise_memories: []
+  persona_prompt: ''
+  quality_rubric: '- All suggestions align with diet?
+
+    - Practical and specific
+
+    - Doesn''t ask about preferences'
+  task_prompt: Quick meal ideas for this week
+  value_category: dietary
+- id: sess_1a03c94ef78b_preference_0
+  memory_bank:
+  - &id026
+    category: indirect
+    fact: Prefers low-carb meal pairings
+  noise_memories: []
+  persona_prompt: ''
+  quality_rubric: '- Aligns with stated preferences?
+
+    - Specific recommendations
+
+    - No asking about genre preferences'
+  task_prompt: Help me pick a movie to watch tonight
+  value_category: preference
+- id: sess_1a03c94ef78b_preference_1
+  memory_bank:
+  - *id026
+  noise_memories: []
+  persona_prompt: ''
+  quality_rubric: '- Matches preferred style/ecosystem?
+
+    - Specific tool not category
+
+    - Uses known preferences'
+  task_prompt: Suggest a productivity tool
+  value_category: preference
+- id: sess_1ab11b4471cb_skill_0
+  memory_bank:
+  - category: direct
+    fact: Dislikes gamified content and anime-based sources for cultural learning
+  - category: indirect
+    fact: Sustained curiosity about Japanese cultural nuances, artists, and authentic learning methods
+  noise_memories: []
+  persona_prompt: ''
+  quality_rubric: '- Appropriate complexity for skill level?
+
+    - Uses right language/tools for background
+
+    - No asking about language preference or skill level'
+  task_prompt: Help me write a function to validate JSON data
+  value_category: skill

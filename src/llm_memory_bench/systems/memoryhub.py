@@ -81,10 +81,15 @@ class MemoryHubMemorySystem(MemorySystem):
         ]
 
     def extract_stored_fact(self, tool_call: ToolCall) -> str:
+        """Extract content from storage actions only (not search/read/retrieval)."""
         if tool_call.name == "memory":
             action = tool_call.arguments.get("action", "")
-            if action == "write":
+            # Only count storage actions (write/update/delete/report)
+            # Skip retrieval actions (search/list/read/similar/relationships/status)
+            if action in ("write", "update"):
                 return tool_call.arguments.get("content", "")
+            # Delete and report are storage actions but don't have new content to evaluate
+            # They still modify the memory store, but we can't match them against expected facts
         return ""
 
     def format_tool_result(self, tool_call: ToolCall) -> dict:

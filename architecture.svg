@@ -1,0 +1,109 @@
+<svg width="900" height="700" xmlns="http://www.w3.org/2000/svg">
+  <!-- Define styles -->
+  <defs>
+    <style>
+      .box { fill: white; stroke: #333; stroke-width: 2; }
+      .ui-box { fill: #fff3cd; stroke: #333; stroke-width: 2; }
+      .exec-box { fill: #e1f5ff; stroke: #333; stroke-width: 2; }
+      .result-box { fill: #d4edda; stroke: #333; stroke-width: 2; }
+      .text { font-family: Arial, sans-serif; font-size: 14px; fill: #333; }
+      .text-small { font-family: Arial, sans-serif; font-size: 12px; fill: #555; }
+      .title { font-family: Arial, sans-serif; font-size: 16px; font-weight: bold; fill: #333; }
+      .arrow { stroke: #666; stroke-width: 2; fill: none; marker-end: url(#arrowhead); }
+    </style>
+    <marker id="arrowhead" markerWidth="10" markerHeight="10" refX="9" refY="3" orient="auto">
+      <polygon points="0 0, 10 3, 0 6" fill="#666" />
+    </marker>
+  </defs>
+
+  <!-- CLI / UI -->
+  <rect x="50" y="20" width="150" height="80" class="ui-box" rx="5"/>
+  <text x="125" y="50" class="title" text-anchor="middle">CLI / UI</text>
+  <text x="125" y="75" class="text-small" text-anchor="middle">Command line</text>
+  <text x="125" y="90" class="text-small" text-anchor="middle">Streamlit web</text>
+
+  <!-- Datasets -->
+  <rect x="50" y="150" width="150" height="100" class="box" rx="5"/>
+  <text x="125" y="175" class="title" text-anchor="middle">Datasets</text>
+  <text x="125" y="200" class="text-small" text-anchor="middle">AlpsBench</text>
+  <text x="125" y="218" class="text-small" text-anchor="middle">BFCL</text>
+  <text x="125" y="236" class="text-small" text-anchor="middle">Custom YAML</text>
+
+  <!-- Config -->
+  <rect x="50" y="300" width="150" height="100" class="box" rx="5"/>
+  <text x="125" y="325" class="title" text-anchor="middle">Config</text>
+  <text x="125" y="350" class="text-small" text-anchor="middle">Model</text>
+  <text x="125" y="368" class="text-small" text-anchor="middle">Memory system</text>
+  <text x="125" y="386" class="text-small" text-anchor="middle">Matcher</text>
+
+  <!-- Execution Mode -->
+  <rect x="280" y="150" width="200" height="250" class="box" rx="5"/>
+  <text x="380" y="175" class="title" text-anchor="middle">Execution Mode</text>
+
+  <!-- API-Level -->
+  <rect x="300" y="195" width="160" height="60" class="exec-box" rx="5"/>
+  <text x="380" y="220" class="text" text-anchor="middle">API-Level</text>
+  <text x="380" y="238" class="text-small" text-anchor="middle">Simulated tools</text>
+
+  <!-- Containerised -->
+  <rect x="300" y="275" width="160" height="60" class="exec-box" rx="5"/>
+  <text x="380" y="300" class="text" text-anchor="middle">Containerised</text>
+  <text x="380" y="318" class="text-small" text-anchor="middle">Real agent + MCP</text>
+
+  <text x="380" y="265" class="text-small" text-anchor="middle" font-style="italic">OR</text>
+
+  <!-- Engine -->
+  <rect x="540" y="150" width="180" height="180" class="box" rx="5"/>
+  <text x="630" y="175" class="title" text-anchor="middle">Engine</text>
+  <text x="630" y="205" class="text-small" text-anchor="middle">Memory System</text>
+  <text x="630" y="220" class="text-small" text-anchor="middle">(prompt + tools)</text>
+  <line x1="560" y1="235" x2="700" y2="235" stroke="#ddd" stroke-width="1"/>
+  <text x="630" y="255" class="text-small" text-anchor="middle">LLM Provider</text>
+  <text x="630" y="270" class="text-small" text-anchor="middle">(Anthropic/OpenAI/Vertex)</text>
+  <line x1="560" y1="285" x2="700" y2="285" stroke="#ddd" stroke-width="1"/>
+  <text x="630" y="305" class="text-small" text-anchor="middle">Runner</text>
+  <text x="630" y="320" class="text-small" text-anchor="middle">Execute conversations</text>
+
+  <!-- Evaluator -->
+  <rect x="540" y="380" width="180" height="120" class="box" rx="5"/>
+  <text x="630" y="405" class="title" text-anchor="middle">Evaluator</text>
+  <text x="630" y="435" class="text-small" text-anchor="middle">Matcher</text>
+  <text x="630" y="450" class="text-small" text-anchor="middle">(embedding/LLM/hybrid)</text>
+  <line x1="560" y1="465" x2="700" y2="465" stroke="#ddd" stroke-width="1"/>
+  <text x="630" y="485" class="text-small" text-anchor="middle">Metrics (P/R/F1)</text>
+
+  <!-- Results -->
+  <rect x="540" y="550" width="180" height="80" class="result-box" rx="5"/>
+  <text x="630" y="575" class="title" text-anchor="middle">Results</text>
+  <text x="630" y="600" class="text-small" text-anchor="middle">JSON output</text>
+  <text x="630" y="615" class="text-small" text-anchor="middle">Comparison tables</text>
+
+  <!-- Arrows -->
+  <!-- CLI to Datasets -->
+  <path d="M 125 100 L 125 150" class="arrow"/>
+
+  <!-- Datasets to Config -->
+  <path d="M 125 250 L 125 300" class="arrow"/>
+
+  <!-- Config to Execution Mode -->
+  <path d="M 200 350 L 280 275" class="arrow"/>
+
+  <!-- Datasets to Execution Mode -->
+  <path d="M 200 200 L 280 200" class="arrow"/>
+
+  <!-- Execution Mode to Engine -->
+  <path d="M 480 225 L 540 240" class="arrow"/>
+  <path d="M 480 305 L 540 280" class="arrow"/>
+
+  <!-- Engine to Evaluator -->
+  <path d="M 630 330 L 630 380" class="arrow"/>
+
+  <!-- Evaluator to Results -->
+  <path d="M 630 500 L 630 550" class="arrow"/>
+
+  <!-- Results back to CLI -->
+  <path d="M 540 590 Q 300 590 200 60" class="arrow" stroke-dasharray="5,5"/>
+
+  <!-- Flow label -->
+  <text x="450" y="680" class="text-small" fill="#666" text-anchor="middle">Left to right: Interface → Input → Execution → Engine → Evaluation → Results</text>
+</svg>

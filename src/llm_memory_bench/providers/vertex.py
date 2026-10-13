@@ -74,6 +74,7 @@ class VertexProvider(LLMProvider):
             kwargs = dict(
                 model=self.model,
                 max_tokens=1024,
+                temperature=0.0,  # Reduce hallucination
                 system=system,
                 messages=messages,
             )
@@ -99,6 +100,7 @@ class VertexProvider(LLMProvider):
             tool_calls=tool_calls,
             input_tokens=response.usage.input_tokens,
             output_tokens=response.usage.output_tokens,
+            metadata={"actual_model": response.model},
         )
 
     def build_tool_result_messages(

@@ -21,6 +21,11 @@ class ExpectedFact(BaseModel):
     fact: str
     type: FactType = FactType.DIRECT
     source_id: str | None = None
+    # AlpsBench fields for canonical 6-tuple matching
+    label: str | None = None
+    preference_attitude: str | None = None
+    time_scope: str | None = None
+    emotion: str | None = None
 
 
 class GroundTruth(BaseModel):

@@ -1,0 +1,62 @@
+scenarios:
+  - id: quick-coffee-location
+    memory_bank:
+      - fact: "User is based in Chongqing, China"
+        category: personal
+      - fact: "User prefers cozy coffee shops with a good atmosphere"
+        category: preference
+    task_prompt: "Where should I go for coffee this afternoon?"
+    persona_prompt: |
+      The user is based in Chongqing, China and prefers cozy coffee shops
+      with a good atmosphere. They want a concrete recommendation.
+    outcomes:
+      - id: local_recommendation
+        statement: "The response recommends specific coffee places relevant to Chongqing."
+      - id: preference_aligned
+        statement: "The recommendations account for a cozy atmosphere."
+      - id: actionable_answer
+        statement: "The response gives a direct recommendation without first asking for location or atmosphere preferences."
+    validators:
+      - type: llm_judge
+
+  - id: quick-dietary-recipe
+    memory_bank:
+      - fact: "User is vegetarian"
+        category: preference
+      - fact: "User prefers quick meals under 30 minutes"
+        category: constraint
+      - fact: "User dislikes garlic"
+        category: preference
+    task_prompt: "What should I make for dinner tonight?"
+    persona_prompt: |
+      The user is vegetarian, dislikes garlic, and prefers meals that take
+      less than 30 minutes. They want a concrete dinner recipe.
+    outcomes:
+      - id: vegetarian_recipe
+        statement: "The response suggests a vegetarian dinner."
+      - id: constraint_aligned
+        statement: "The recipe is practical for preparation in under 30 minutes and avoids garlic."
+      - id: actionable_recipe
+        statement: "The response provides a specific recipe with actionable ingredients or steps."
+    validators:
+      - type: llm_judge
+
+  - id: quick-technical-preference
+    memory_bank:
+      - fact: "User prefers Python over R for data analysis"
+        category: preference
+      - fact: "User uses pandas for tabular data"
+        category: technical
+    task_prompt: "How should I read a CSV file?"
+    persona_prompt: |
+      The user is a data scientist who prefers Python over R and uses pandas
+      for tabular data. They want a direct code-oriented answer.
+    outcomes:
+      - id: python_answer
+        statement: "The response gives a Python solution rather than asking which language to use."
+      - id: pandas_alignment
+        statement: "The response uses pandas or an equivalent Python tabular-data approach."
+      - id: actionable_code
+        statement: "The response includes a concrete, usable example."
+    validators:
+      - type: llm_judge
