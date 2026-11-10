@@ -10,6 +10,6 @@ system:
 
 model: claude-sonnet-4@20250514
 
-dataset: datasets/converted/task1.jsonl
+dataset: datasets/converted/alpsbench-task1.yaml
 
 max_conversations: 10

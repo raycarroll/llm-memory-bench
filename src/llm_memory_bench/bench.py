@@ -56,6 +56,11 @@ class RunConfig:
     integration_platform: str | None = None
     seed_plan: SeedPlan | None = None
     keep_container: bool = False
+    require_isolation: bool = True  # Enforce conversation isolation (reset between conversations)
+    cleanup_before_run: bool = True  # Run integration cleanup before benchmark
+    experiment_group: str | None = None  # Group ID for comparing/aggregating runs
+    experiment_metadata: dict[str, str] = field(default_factory=dict)  # Additional experiment context
+    experiment_runs: int = 1  # Number of times to run this experiment
 
     @classmethod
     def from_yaml(cls, path: Path) -> RunConfig:
@@ -94,6 +99,9 @@ class RunConfig:
         keep_container = container.get("keep_alive", False)
         if not isinstance(keep_container, bool):
             raise ValueError("container.keep_alive must be a boolean")
+        cleanup_before_run = container.get("cleanup_before_run", True)
+        if not isinstance(cleanup_before_run, bool):
+            raise ValueError("container.cleanup_before_run must be a boolean")
         if integration_profile:
             profile_path = Path(integration_profile)
             if not profile_path.is_absolute():
@@ -105,6 +113,14 @@ class RunConfig:
             if integration_profile
             else "profile"
         )
+        experiment = data.get("experiment", {})
+        if not isinstance(experiment, dict):
+            raise ValueError("experiment must be a mapping")
+
+        experiment_runs = experiment.get("runs", 1)
+        if not isinstance(experiment_runs, int) or experiment_runs < 1:
+            raise ValueError("experiment.runs must be a positive integer")
+
         return cls(
             host_name=host["name"],
             host_version=host["version"],
@@ -119,6 +135,11 @@ class RunConfig:
             integration_platform=integration.get("platform"),
             seed_plan=seed_plan,
             keep_container=keep_container,
+            require_isolation=container.get("require_isolation", True),
+            cleanup_before_run=cleanup_before_run,
+            experiment_group=experiment.get("group_id"),
+            experiment_metadata=experiment.get("metadata", {}),
+            experiment_runs=experiment_runs,
         )
 
     @property
@@ -140,9 +161,12 @@ class RunConfig:
 @dataclass
 class ConversationResult:
     conversation_id: str
-    stored: list[dict] = field(default_factory=list)
+    stored: list[dict] = field(default_factory=list)  # Extracted memories (final output)
     ground_truth: list[dict] = field(default_factory=list)
     driver_log: str = ""
+    conversation_turns: list[dict] = field(default_factory=list)  # Original user/assistant turns
+    hook_storage_events: list[dict] = field(default_factory=list)  # What hooks captured
+    retention_calls: list[dict] = field(default_factory=list)  # Raw data sent to retain API
 
 
 @dataclass
@@ -273,12 +297,22 @@ def materialize_integration(
     project_id: str,
 ) -> str:
     platform = config.integration_platform or config.host_name
+
+    # Expand env vars needed for materialization (e.g., MCP HTTP URLs)
+    context_values = {"project_id": project_id}
+    for key, value in config.system_env.items():
+        if value:
+            context_values[key] = _resolve_config_env(key, value)
+
     try:
         result = materialize_profile(
             profile,
             platform,
             target,
-            MaterializationContext(project_id=project_id),
+            MaterializationContext(
+                project_id=project_id,
+                values=context_values,
+            ),
         )
         errors = ProfileVerifier(profile, platform).verify_workspace(target)
     except ProfileError as exc:
@@ -373,6 +407,8 @@ def start_container(
     env_args.extend([
         "-e",
         "LLM_MEMORY_BENCH_EVENT_LOG=/run/llm-memory-bench/integration-events.jsonl",
+        "-e",
+        "LLM_MEMORY_BENCH_CAPTURE_HOOK_OUTPUT=true",
     ])
 
     if config.system_version:
@@ -535,6 +571,19 @@ def install_integration(
             raise RuntimeError(f"Integration dependency install failed:\n{result.stderr}")
         console.print("Integration runtime installed.", style="dim")
 
+    # Run lifecycle.install hook if present (e.g., for Hindsight npm package)
+    install_spec = profile.lifecycle.get("install", {})
+    command = install_spec.get("command") if isinstance(install_spec, dict) else None
+    if isinstance(command, list) and all(isinstance(part, str) for part in command):
+        console.print("  Running integration installer...", style="dim")
+        result = _exec(container_id, command, timeout=300)  # 5 min timeout for npm installs
+        if result.returncode != 0:
+            raise RuntimeError(f"Integration install failed:\n{result.stderr}")
+        output = result.stdout.strip()
+        if output:
+            console.print(f"  {output}", style="dim")
+        console.print("  Integration installed successfully.", style="green")
+
 
 def drive_conversation(
     container_id: str,
@@ -574,7 +623,7 @@ def drive_conversation(
     if session_id:
         cmd.extend(["--resume", session_id])
 
-    result = _exec(container_id, cmd, timeout=600)
+    result = _exec(container_id, cmd, timeout=1800)  # 30 minutes for long conversations
 
     if result.returncode != 0:
         detail = result.stderr.strip() or result.stdout.strip() or "no diagnostic output"
@@ -609,7 +658,7 @@ def query_integration(
     container_id: str,
     profile: IntegrationProfile,
     project_id: str,
-) -> list[dict]:
+) -> tuple[list[dict], list[dict]]:
     observe = profile.lifecycle.get("observe", {})
     command = observe.get("command") if isinstance(observe, dict) else None
     if not isinstance(command, list) or not all(isinstance(part, str) for part in command):
@@ -620,17 +669,53 @@ def query_integration(
     result = _exec(container_id, expanded, timeout=60)
     if result.returncode != 0:
         console.print(f"  Integration observation failed: {result.stderr[:300]}", style="red")
-        return []
+        return ([], [])
     try:
         data = json.loads(result.stdout)
     except json.JSONDecodeError:
         console.print("  Integration observation returned invalid JSON", style="red")
-        return []
-    if isinstance(data, dict) and isinstance(data.get("results"), list):
-        return data["results"]
+        return ([], [])
+
+    # Handle different memory system response formats:
+    # - MemoryHub CLI: {"status": "ok", "data": {"results": [...]}} or {"results": [...]}
+    # - Hindsight API: {"items": [...], "total": N, "_benchmark_retention_calls": [...]}
+    # Return tuple: (memories, retention_calls)
+    if isinstance(data, dict):
+        retention_calls = data.get("_benchmark_retention_calls", [])
+
+        if isinstance(data.get("items"), list):
+            return (data["items"], retention_calls)
+        if isinstance(data.get("results"), list):
+            return (data["results"], retention_calls)
+        if isinstance(data.get("data"), dict) and isinstance(data["data"].get("results"), list):
+            return (data["data"]["results"], retention_calls)
+
     if isinstance(data, list):
-        return data
-    return []
+        return (data, [])
+    return ([], [])
+
+
+def cleanup_integration(
+    container_id: str,
+    profile: IntegrationProfile,
+    project_id: str,
+) -> None:
+    """Run integration-specific cleanup (e.g., delete all memories)."""
+    cleanup_spec = profile.lifecycle.get("cleanup", {})
+    command = cleanup_spec.get("command") if isinstance(cleanup_spec, dict) else None
+    if not isinstance(command, list) or not all(isinstance(part, str) for part in command):
+        console.print("  No cleanup command configured, skipping", style="dim")
+        return
+
+    expanded = [part.replace("${MEMORYHUB_PROJECT_ID}", project_id) for part in command]
+    console.print("  Cleaning integration state...", style="dim")
+    result = _exec(container_id, expanded, timeout=120)  # Increased timeout for Hindsight API calls
+    if result.returncode != 0:
+        console.print(f"  Cleanup warning: {result.stderr[:200]}", style="yellow")
+    else:
+        output = result.stdout.strip()
+        if output:
+            console.print(f"  {output}", style="dim")
 
 
 def cleanup_system(container_id: str) -> None:
@@ -655,7 +740,68 @@ def collect_environment(container_id: str, config: RunConfig) -> dict:
     if result.returncode == 0:
         env["image_digest"] = result.stdout.strip()
 
+    # Capture configuration context for debugging
+    config_context = _collect_config_context(container_id)
+    if config_context:
+        env["config_context"] = config_context
+
     return env
+
+
+def _collect_config_context(container_id: str) -> dict:
+    """Capture MCP tools, rules, and other config details from the container."""
+    context = {}
+
+    # MCP configuration
+    result = _exec(container_id, ["cat", "/workspace/.mcp.json"], timeout=10)
+    if result.returncode == 0:
+        try:
+            mcp_config = json.loads(result.stdout)
+            context["mcp_servers"] = list(mcp_config.get("mcpServers", {}).keys())
+        except json.JSONDecodeError:
+            pass
+
+    # Available MCP tools (requires claude CLI)
+    result = _exec(container_id, ["claude", "mcp", "list", "--json"], timeout=30)
+    if result.returncode == 0:
+        try:
+            mcp_list = json.loads(result.stdout)
+            # Extract tool names from each server
+            tools = []
+            for server in mcp_list.get("servers", []):
+                for tool in server.get("tools", []):
+                    tools.append({
+                        "server": server.get("name"),
+                        "tool": tool.get("name"),
+                    })
+            context["available_tools"] = tools
+        except json.JSONDecodeError:
+            pass
+
+    # Claude Code rules
+    result = _exec(container_id, ["find", "/workspace/.claude/rules/", "-type", "f", "-name", "*.md"], timeout=10)
+    if result.returncode == 0:
+        rules = [line.strip() for line in result.stdout.strip().split("\n") if line.strip()]
+        context["rules"] = [r.replace("/workspace/.claude/rules/", "") for r in rules]
+
+    # Hooks
+    result = _exec(container_id, ["find", "/workspace/.claude/hooks/", "-type", "f"], timeout=10)
+    if result.returncode == 0:
+        hooks = [line.strip() for line in result.stdout.strip().split("\n") if line.strip()]
+        context["hooks"] = [h.replace("/workspace/.claude/hooks/", "") for h in hooks]
+
+    # Claude Code settings
+    result = _exec(container_id, ["cat", "/workspace/.claude/settings.json"], timeout=10)
+    if result.returncode == 0:
+        try:
+            settings = json.loads(result.stdout)
+            # Only include non-sensitive config keys
+            safe_keys = ["permissionMode", "model", "allowedTools", "mcpServers"]
+            context["settings"] = {k: v for k, v in settings.items() if k in safe_keys}
+        except json.JSONDecodeError:
+            pass
+
+    return context
 
 
 def stop_container(container_id: str, keep: bool = False) -> None:
@@ -670,11 +816,105 @@ def stop_container(container_id: str, keep: bool = False) -> None:
 
 
 def extract_ground_truth(conversation: Conversation) -> list[dict]:
+    """Extract ground truth from conversation.
+
+    Handles both per-turn and cumulative ground truth:
+    - Cumulative: conversation.cumulative_ground_truth (BFCL datasets)
+    - Per-turn: turn.ground_truth (AlpsBench datasets)
+    """
     facts = []
+
+    # Check for cumulative ground truth first (BFCL pattern)
+    if conversation.cumulative_ground_truth:
+        for ef in conversation.cumulative_ground_truth.should_store:
+            facts.append({"fact": ef.fact, "type": ef.type.value})
+        return facts
+
+    # Fall back to per-turn ground truth (AlpsBench pattern)
     for turn in conversation.turns:
         for ef in turn.ground_truth.should_store:
             facts.append({"fact": ef.fact, "type": ef.type.value})
     return facts
+
+
+def _smoke_test_integration(
+    container_id: str,
+    profile: IntegrationProfile | None,
+    project_id: str | None,
+) -> dict:
+    """Verify MCP tools can be called before running the full benchmark.
+
+    Uses the same driver.py path as the actual benchmark to ensure we're
+    testing the real code path, not a different configuration.
+    """
+    if profile is None or project_id is None:
+        return {"status": "skipped", "reason": "no integration profile"}
+
+    console.print("Running MCP tool smoke test...", style="dim")
+    start_time = datetime.now(timezone.utc)
+
+    # Use the profile's smoke_test command if specified, otherwise skip
+    smoke_test_spec = profile.lifecycle.get("smoke_test", {})
+    command = smoke_test_spec.get("command") if isinstance(smoke_test_spec, dict) else None
+
+    if not (isinstance(command, list) and all(isinstance(part, str) for part in command)):
+        return {"status": "skipped", "reason": "no smoke_test command in profile"}
+
+    # Smoke test runs a full Claude conversation with MCP/hooks - needs time for:
+    # - MCP server startup, - Hook execution (SessionStart/Stop)
+    # - Agent SDK query loop with tool calls
+    result = _exec(container_id, command, timeout=180)
+
+    # Parse smoke_test.py output
+    try:
+        smoke_output = json.loads(result.stdout)
+        tool_calls = smoke_output.get("tool_calls", [])
+        test_error = smoke_output.get("error")
+
+        if result.returncode != 0:
+            # smoke_test.py returns 1 if no memory tools were called
+            raise RuntimeError(
+                f"MCP smoke test FAILED: no memory tools called. "
+                f"Tool calls: {[tc.get('name') for tc in tool_calls]}"
+            )
+
+        if test_error:
+            raise RuntimeError(f"MCP smoke test error: {test_error}")
+
+        # Filter for memory storage tools (same logic as smoke_test.py)
+        memory_keywords = ["memory", "hindsight", "retain", "remember", "store", "save"]
+        memory_tools = [
+            tc for tc in tool_calls
+            if any(keyword in tc.get("name", "").lower() for keyword in memory_keywords)
+        ]
+
+        if not memory_tools:
+            raise RuntimeError(
+                f"MCP smoke test FAILED: no memory tools called. "
+                f"Tool calls: {[tc.get('name') for tc in tool_calls]}"
+            )
+
+        end_time = datetime.now(timezone.utc)
+        duration_ms = int((end_time - start_time).total_seconds() * 1000)
+
+        console.print(
+            f"  ✓ MCP smoke test passed ({len(memory_tools)} memory tool call(s))",
+            style="green"
+        )
+
+        return {
+            "status": "passed",
+            "duration_ms": duration_ms,
+            "tool_calls": tool_calls,
+            "test_content": smoke_output.get("test_content", ""),
+            "timestamp": start_time.isoformat(),
+        }
+
+    except json.JSONDecodeError as e:
+        raise RuntimeError(
+            f"MCP smoke test FAILED: invalid output. "
+            f"Error: {e}, Output: {result.stdout[:200]}"
+        )
 
 
 def run_benchmark(config: RunConfig) -> BenchResult:
@@ -701,10 +941,12 @@ def run_benchmark(config: RunConfig) -> BenchResult:
     if profile is not None:
         reset = profile.lifecycle.get("reset", {})
         reset_supported = isinstance(reset, dict) and reset.get("support") == "supported"
-        if len(conversations) > 1 and not reset_supported:
+
+        if len(conversations) > 1 and not reset_supported and config.require_isolation:
             raise RuntimeError(
                 f"Integration {profile.profile_id} cannot safely run "
-                "multiple conversations: lifecycle.reset is unsupported"
+                "multiple conversations: lifecycle.reset is unsupported. "
+                "Set require_isolation: false in config to allow cross-conversation bleed."
             )
         validate_integration_environment(config, profile)
         workspace_tmp = tempfile.TemporaryDirectory(prefix="llm-bench-integration-")
@@ -744,6 +986,24 @@ def run_benchmark(config: RunConfig) -> BenchResult:
         else:
             assert workspace_tmp is not None
             install_integration(container_id, workspace_tmp.name, profile)
+
+        # Clean integration state before benchmark (if enabled)
+        if config.cleanup_before_run and profile is not None and project_id is not None:
+            cleanup_integration(container_id, profile, project_id)
+
+        # Run smoke test before benchmark conversations
+        try:
+            smoke_test_result = _smoke_test_integration(container_id, profile, project_id)
+        except Exception as e:
+            smoke_test_result = {
+                "status": "failed",
+                "error": str(e)[:500],
+                "timestamp": datetime.now(timezone.utc).isoformat(),
+            }
+            console.print(f"  ⚠ Integration smoke test FAILED (continuing anyway): {str(e)[:100]}", style="yellow")
+            # Continue - smoke test uses direct Claude calls which don't expand env vars
+            # Benchmark uses driver.py which DOES expand vars properly
+
         environment = collect_environment(container_id, config)
         if profile is not None:
             environment["integration"] = {
@@ -751,9 +1011,20 @@ def run_benchmark(config: RunConfig) -> BenchResult:
                 "platform": config.integration_platform or config.host_name,
                 "effective_hash": effective_profile_hash,
                 "project_id": project_id,
+                "smoke_test": smoke_test_result,
+                "memory_system": profile.memory_system.get("name") if profile.memory_system else None,
             }
+            # Override system name with actual memory system name from profile
+            if profile.memory_system and "name" in profile.memory_system:
+                environment["system"]["name"] = profile.memory_system["name"]
         if seed_result is not None:
             environment["benchmark_seed"] = seed_result.as_dict()
+        if config.experiment_group:
+            environment["experiment"] = {
+                "group_id": config.experiment_group,
+                "metadata": config.experiment_metadata,
+                "timestamp": datetime.now(timezone.utc).isoformat(),
+            }
         result = BenchResult(config=config, environment=environment)
 
         for i, conversation in enumerate(conversations):
@@ -770,24 +1041,60 @@ def run_benchmark(config: RunConfig) -> BenchResult:
             )
             if profile is None:
                 stored = query_stored(container_id)
+                retention_calls = []
             else:
                 assert project_id is not None
-                stored = query_integration(container_id, profile, project_id)
+                stored, retention_calls = query_integration(container_id, profile, project_id)
             ground_truth = extract_ground_truth(conversation)
+
+            # Extract hook storage events for visibility (similar to tool calls)
+            hook_storage_events = []
+            try:
+                driver_data = json.loads(output)
+                for response in driver_data.get("responses", []):
+                    for event in response.get("integration_events", []):
+                        if event.get("name") == "integration.hook_lifecycle":
+                            details = event.get("details", {})
+                            # Capture Stop hook responses which contain what was stored
+                            if details.get("hook_event") == "Stop" and details.get("phase") == "hook_response":
+                                hook_storage_events.append({
+                                    "hook": details.get("hook_event"),
+                                    "output_preview": details.get("hook_output", "")[:500] if "hook_output" in details else None,
+                                    "exit_code": details.get("exit_code"),
+                                })
+            except (json.JSONDecodeError, KeyError):
+                pass
 
             conv_result = ConversationResult(
                 conversation_id=conversation.id,
                 stored=stored,
                 ground_truth=ground_truth,
                 driver_log=output,
+                conversation_turns=[
+                    {"role": t.role, "content": t.content}
+                    for t in conversation.turns
+                ],
+                hook_storage_events=hook_storage_events,
+                retention_calls=retention_calls,
             )
             result.conversation_results.append(conv_result)
 
-            console.print(
-                f"    stored {len(stored)} items, "
-                f"expected {len(ground_truth)} facts",
-                style="dim",
-            )
+            # Show breakdown of direct vs derived for Hindsight
+            direct = sum(1 for item in stored if item.get("_benchmark_metadata", {}).get("is_direct", False))
+            derived = sum(1 for item in stored if item.get("_benchmark_metadata", {}).get("is_derived", False))
+
+            if direct > 0 or derived > 0:
+                console.print(
+                    f"    stored {len(stored)} items ({direct} direct, {derived} derived), "
+                    f"expected {len(ground_truth)} facts",
+                    style="dim",
+                )
+            else:
+                console.print(
+                    f"    stored {len(stored)} items, "
+                    f"expected {len(ground_truth)} facts",
+                    style="dim",
+                )
 
             if i < len(conversations) - 1:
                 if profile is None:

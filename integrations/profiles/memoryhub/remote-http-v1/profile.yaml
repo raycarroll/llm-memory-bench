@@ -12,19 +12,15 @@ memory_system:
   bridge_fastmcp_version: 4.0.0
 
 topology:
-  kind: remote-http-stdio-bridge
+  kind: remote-http
   endpoint_env: MEMORYHUB_URL
-  agent_transport: stdio
-  bridge: authenticated-mcp-proxy
+  agent_transport: http
   authentication:
-    - api-key
-    - bearer-token
+    - session-registration-tool
   runtime_env:
     required:
       - MEMORYHUB_URL
-    one_of:
       - MEMORYHUB_API_KEY
-      - MEMORYHUB_AUTH_TOKEN
   isolation: dedicated-project-id
   reset: unsupported
 
@@ -40,10 +36,7 @@ required_context:
 
 dependencies:
   python:
-    - memoryhub==0.15.3
     - memoryhub-cli==0.12.1
-    - fastmcp==4.0.0
-    - mcp==2.1.1
 
 platforms:
   claude-code:
@@ -58,26 +51,26 @@ platforms:
         mode: 493
       - source: assets/.claude/settings.json
         target: .claude/settings.json
-      - source: assets/.llm-memory-bench/memoryhub-mcp-proxy.py
-        target: .llm-memory-bench/memoryhub-mcp-proxy.py
     mcp:
       path: .mcp.json
       servers:
         memoryhub:
-          type: stdio
-          command: /opt/llm-memory-bench/integration-runtime/bin/python
-          args:
-            - /workspace/.llm-memory-bench/memoryhub-mcp-proxy.py
-          env:
-            MEMORYHUB_URL: "${MEMORYHUB_URL}"
-            MEMORYHUB_API_KEY: "${MEMORYHUB_API_KEY}"
-            MEMORYHUB_AUTH_TOKEN: "${MEMORYHUB_AUTH_TOKEN}"
+          url: "{{ MEMORYHUB_URL }}"
+          type: http
     required_commands:
       - memoryhub
 
 lifecycle:
   session_start:
     hook: .claude/hooks/load-memories.sh
+  smoke_test:
+    command:
+      - bash
+      - -c
+      - |
+        export SMOKE_TEST_TIMESTAMP=$(date -Iseconds)
+        export SMOKE_TEST_MODEL="${SMOKE_TEST_MODEL:-claude-sonnet-4-5@20250929}"
+        python3 /host-driver/smoke_test_memoryhub.py
   observe:
     command:
       - /opt/llm-memory-bench/integration-runtime/bin/memoryhub
@@ -88,6 +81,38 @@ lifecycle:
       - json
       - --max
       - "1000"
+  cleanup:
+    command:
+      - bash
+      - -c
+      - |
+        set -e
+        MH=/opt/llm-memory-bench/integration-runtime/bin/memoryhub
+        echo "Cleaning all memories"
+
+        # List ALL memories (suppress INFO logs by discarding stderr)
+        MEMORIES=$($MH list --output json --max 1000 2>/dev/null)
+
+        # Extract memory IDs from nested structure
+        IDS=$(echo "$MEMORIES" | python3 -c '
+        import sys, json
+        data = json.load(sys.stdin)
+        memories = data.get("data", {}).get("results", data.get("data", {}).get("memories", []))
+        for m in memories:
+            print(m.get("id", ""))
+        ')
+
+        # Delete each memory
+        if [ -n "$IDS" ]; then
+          TOTAL=$(echo "$IDS" | wc -l | tr -d " ")
+          echo "Found $TOTAL memories, deleting..."
+          echo "$IDS" | while IFS= read -r id; do
+            [ -n "$id" ] && $MH delete "$id" --force --output quiet 2>/dev/null || true
+          done
+          echo "Cleanup complete"
+        else
+          echo "No memories to delete"
+        fi
   reset:
     support: unsupported
     reason: >-

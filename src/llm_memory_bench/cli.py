@@ -1367,10 +1367,6 @@ def bench(config_path: str, output: str | None):
 
     config = BenchRunConfig.from_yaml(Path(config_path))
 
-    if not output:
-        ts = datetime.now(timezone.utc).strftime("%Y%m%d-%H%M%S")
-        output = f"results/bench_{ts}_{config.host_name}_{config.system_name}.json"
-
     console.print(
         f"Benchmark: host={config.host_name}@{config.host_version}, "
         f"system={config.system_name}"
@@ -1378,31 +1374,158 @@ def bench(config_path: str, output: str | None):
         f"model={config.model}"
     )
 
-    result = run_bench(config)
+    if config.experiment_runs > 1:
+        console.print(
+            f"Experiment: {config.experiment_group or 'default'} "
+            f"({config.experiment_runs} runs)",
+            style="bold"
+        )
 
-    output_data = {
-        "environment": result.environment,
-        "dataset": {
-            "path": config.dataset_path,
-        },
-        "conversations": [
-            {
+    # Run the benchmark N times
+    for run_number in range(1, config.experiment_runs + 1):
+        if config.experiment_runs > 1:
+            console.print(f"\n[bold cyan]Run {run_number}/{config.experiment_runs}[/bold cyan]")
+
+        # Generate output filename for this run
+        if not output:
+            ts = datetime.now(timezone.utc).strftime("%Y%m%d-%H%M%S")
+            exp_prefix = f"{config.experiment_group}_" if config.experiment_group else ""
+            run_suffix = f"_run{run_number}" if config.experiment_runs > 1 else ""
+            output_file = f"results/bench_{exp_prefix}{ts}{run_suffix}_{config.host_name}_{config.system_name}.json"
+        else:
+            # User specified output - only valid for single run
+            if config.experiment_runs > 1:
+                console.print(
+                    "Warning: --output specified with experiment.runs > 1, "
+                    "using auto-generated filenames instead",
+                    style="yellow"
+                )
+                ts = datetime.now(timezone.utc).strftime("%Y%m%d-%H%M%S")
+                exp_prefix = f"{config.experiment_group}_" if config.experiment_group else ""
+                output_file = f"results/bench_{exp_prefix}{ts}_run{run_number}_{config.host_name}_{config.system_name}.json"
+            else:
+                output_file = output
+
+        # Add run number to metadata if multiple runs
+        if config.experiment_runs > 1:
+            config.experiment_metadata["run_number"] = str(run_number)
+
+        result = run_bench(config)
+
+        # Parse driver logs to extract turn-by-turn tool calls for evaluation
+        conversations = []
+        for cr in result.conversation_results:
+            conv_data = {
                 "conversation_id": cr.conversation_id,
                 "stored": cr.stored,
                 "ground_truth": cr.ground_truth,
+                "turns": [],
             }
-            for cr in result.conversation_results
-        ],
-    }
 
-    output_path = Path(output)
-    output_path.parent.mkdir(parents=True, exist_ok=True)
-    output_path.write_text(json.dumps(output_data, indent=2))
-    console.print(f"\nResults written to {output_path}")
+            # Parse driver_log JSON to extract structured turn data
+            if cr.driver_log:
+                try:
+                    driver_output = json.loads(cr.driver_log)
+
+                    # Build a map of user-turn index -> user content
+                    # Driver processes only user turns, so index 0 = first user turn, etc.
+                    user_content_map = {}
+                    user_turn_idx = 0
+                    for turn in cr.conversation_turns:
+                        if turn["role"] == "user":
+                            user_content_map[user_turn_idx] = turn["content"]
+                            user_turn_idx += 1
+
+                    # Merge driver responses with original user content
+                    for response in driver_output.get("responses", []):
+                        if "error" not in response:
+                            turn_idx = response.get("turn", 0)
+                            turn_data = {
+                                "turn_index": turn_idx,
+                                "role": "assistant",
+                                "user_content": user_content_map.get(turn_idx, ""),  # Add user prompt
+                                "tool_calls": [
+                                    {
+                                        "name": tc["name"],
+                                        "arguments": tc.get("arguments", {}),
+                                    }
+                                    for tc in response.get("tool_calls", [])
+                                ],
+                                "response_text": response.get("response", ""),
+                                "input_tokens": response.get("usage", {}).get("input_tokens", 0),
+                                "output_tokens": response.get("usage", {}).get("output_tokens", 0),
+                                "integration_events": response.get("integration_events", []),
+                            }
+                            conv_data["turns"].append(turn_data)
+
+                    # Also include top-level integration events, runtime info, and available tools
+                    conv_data["integration_events"] = driver_output.get("integration_events", [])
+                    conv_data["runtime"] = driver_output.get("runtime", {})
+                    conv_data["mcp_servers"] = driver_output.get("available_tools", [])  # Renamed for clarity
+                except (json.JSONDecodeError, KeyError):
+                    # If parsing fails, just store the raw log
+                    conv_data["driver_log_raw"] = cr.driver_log
+
+            conversations.append(conv_data)
+
+        # Extract memory system name from integration profile or system name
+        system_name = result.environment.get("system", {}).get("name", "unknown")
+        # If we have integration profile info, extract the base system name
+        if "integration" in result.environment:
+            profile_name = result.environment["integration"].get("profile", "")
+            if profile_name.startswith("memoryhub"):
+                system_name = "memoryhub"
+            elif profile_name.startswith("gbrain"):
+                system_name = "gbrain"
+
+        output_data = {
+            "config": {
+                "system": system_name,
+                "provider": "claude-code-container",
+                "model": result.environment.get("model", config.model),
+            },
+            "environment": result.environment,
+            "dataset": {
+                "path": config.dataset_path,
+            },
+            "conversations": conversations,
+        }
+
+        output_path = Path(output_file)
+        output_path.parent.mkdir(parents=True, exist_ok=True)
+        output_path.write_text(json.dumps(output_data, indent=2))
+        console.print(f"\nResults written to {output_path}")
+
+        # Reset output for next iteration
+        if config.experiment_runs > 1:
+            output = None  # Force auto-generation for next run
+
+    # Summary after all runs complete
+    if config.experiment_runs > 1:
+        console.print(f"\n[bold green]Completed {config.experiment_runs} runs[/bold green]")
+        console.print(f"Results pattern: results/bench_{config.experiment_group or 'default'}_*_run*_*.json")
 
     total_stored = sum(len(cr.stored) for cr in result.conversation_results)
     total_expected = sum(len(cr.ground_truth) for cr in result.conversation_results)
-    console.print(
-        f"  {len(result.conversation_results)} conversations, "
-        f"{total_stored} items stored, {total_expected} facts expected"
+
+    # Show breakdown of direct vs derived memories (Hindsight-specific)
+    total_direct = sum(
+        sum(1 for item in cr.stored if item.get("_benchmark_metadata", {}).get("is_direct", False))
+        for cr in result.conversation_results
     )
+    total_derived = sum(
+        sum(1 for item in cr.stored if item.get("_benchmark_metadata", {}).get("is_derived", False))
+        for cr in result.conversation_results
+    )
+
+    if total_direct > 0 or total_derived > 0:
+        console.print(
+            f"  {len(result.conversation_results)} conversations, "
+            f"{total_stored} items stored ({total_direct} direct, {total_derived} derived), "
+            f"{total_expected} facts expected"
+        )
+    else:
+        console.print(
+            f"  {len(result.conversation_results)} conversations, "
+            f"{total_stored} items stored, {total_expected} facts expected"
+        )

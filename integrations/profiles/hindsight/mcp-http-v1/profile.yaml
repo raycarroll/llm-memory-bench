@@ -1,0 +1,196 @@
+api_version: llm-memory-bench.dev/v1
+kind: AgentMemoryIntegration
+
+metadata:
+  name: hindsight-real
+  version: 1.0.0
+
+memory_system:
+  name: hindsight
+  server_version: latest
+
+topology:
+  kind: remote-http
+  description: Real Hindsight integration via @vectorize-io/hindsight-coding-agents package
+
+capabilities:
+  - retain     # Store observations
+  - recall     # Retrieve memories
+  - reflect    # Generate insights
+  - knowledge  # Knowledge pages
+
+required_context: []
+
+dependencies:
+  runtime:
+    hindsight_server: ">=0.1.0"
+    npm_package: "@vectorize-io/hindsight-coding-agents@latest"
+
+platforms:
+  claude-code:
+    min_version: 1.0.33
+    assets: []  # Hooks installed by npm package
+    required_commands:
+      - node
+      - npm
+
+lifecycle:
+  install:
+    # Install the real Hindsight coding-agents package
+    command:
+      - bash
+      - -c
+      - |
+        set -e
+
+        # Install the npm package globally
+        npm install -g @vectorize-io/hindsight-coding-agents
+
+        # Run installer for Claude Code with self-hosted server
+        # This installs to ~/.claude/ (user home)
+        npx @vectorize-io/hindsight-coding-agents install claude-code \
+          --server self-hosted \
+          --api-url "${HINDSIGHT_API_URL}"
+
+        # Copy installed files to workspace for project-scoped configuration
+        # The benchmark driver expects files in /workspace/.claude/
+        mkdir -p /workspace/.claude/hooks
+        mkdir -p /workspace/.claude/skills
+        mkdir -p /workspace/.claude/rules
+
+        # Copy hooks
+        if [ -d ~/.claude/hooks ]; then
+          cp -r ~/.claude/hooks/* /workspace/.claude/hooks/ 2>/dev/null || true
+        fi
+
+        # Copy skill
+        if [ -d ~/.claude/skills ]; then
+          cp -r ~/.claude/skills/* /workspace/.claude/skills/ 2>/dev/null || true
+        fi
+
+        # Merge settings.json
+        if [ -f ~/.claude/settings.json ]; then
+          cp ~/.claude/settings.json /workspace/.claude/settings.json
+        fi
+
+        # Create .mcp.json for the workspace
+        # The installer uses 'claude mcp add' which writes to the database,
+        # but the driver expects .mcp.json
+        # The MCP server needs HINDSIGHT_MCP_HARNESS env var
+        cat > /workspace/.mcp.json <<'EOF'
+        {
+          "mcpServers": {
+            "hindsight": {
+              "command": "node",
+              "args": ["/root/.hindsight/coding-agents/dist/mcp-server.js"],
+              "type": "stdio",
+              "env": {
+                "HINDSIGHT_MCP_HARNESS": "claude-code"
+              }
+            }
+          }
+        }
+        EOF
+
+        echo "Hindsight integration installed and copied to workspace"
+
+  smoke_test:
+    command:
+      - bash
+      - -c
+      - |
+        export SMOKE_TEST_TIMESTAMP=$(date -Iseconds)
+        export SMOKE_TEST_MODEL="${SMOKE_TEST_MODEL:-claude-sonnet-4-5@20250929}"
+        python3 /host-driver/smoke_test_hindsight.py
+
+  observe:
+    command:
+      - python3
+      - -c
+      - |
+        import json, os, subprocess
+
+        api_url = os.environ["HINDSIGHT_API_URL"]
+        bank_id = os.environ["HINDSIGHT_BANK_ID"]
+
+        # Query memories
+        mem_result = subprocess.run(
+            ["curl", "-s", f"{api_url}/v1/default/banks/{bank_id}/memories/list?limit=10000"],
+            capture_output=True, text=True
+        )
+        memories = json.loads(mem_result.stdout) if mem_result.returncode == 0 else {"items": [], "total": 0}
+
+        # Query documents
+        doc_result = subprocess.run(
+            ["curl", "-s", f"{api_url}/v1/default/banks/{bank_id}/documents?limit=100"],
+            capture_output=True, text=True
+        )
+        documents = json.loads(doc_result.stdout) if doc_result.returncode == 0 else {"documents": []}
+
+        # Tag memories
+        for item in memories.get("items", []):
+            item["_benchmark_metadata"] = {
+                "is_direct": item.get("fact_type") == "observation",
+                "is_derived": item.get("fact_type") == "world",
+                "consolidated_at": item.get("consolidated_at")
+            }
+
+        # Format documents as retention_calls (without full content to avoid arg list issues)
+        retention_calls = [{
+            "document_id": doc.get("id"),
+            "content_length": len(doc.get("original_text", "")),
+            "memory_unit_count": doc.get("memory_unit_count", 0),
+            "created_at": doc.get("created_at"),
+            "fact_breakdown": doc.get("nodes_by_fact_type", {})
+        } for doc in documents.get("documents", [])]
+
+        print(json.dumps({
+            "items": memories.get("items", []),
+            "total": memories.get("total", 0),
+            "_benchmark_retention_calls": retention_calls
+        }))
+
+  cleanup:
+    command:
+      - bash
+      - -c
+      - |
+        # Clear all memories from this Hindsight bank
+        set +e  # Don't fail if cleanup partially fails
+
+        # Wait for any async operations to complete (prevent bleed between runs)
+        echo "Waiting for async operations to complete..."
+        for i in {1..30}; do
+          PENDING=$(curl -s "${HINDSIGHT_API_URL}/v1/default/banks/${HINDSIGHT_BANK_ID}/operations?status=pending" | \
+                    python3 -c 'import sys, json; print(len(json.load(sys.stdin).get("operations", [])))' 2>/dev/null || echo "0")
+          PROCESSING=$(curl -s "${HINDSIGHT_API_URL}/v1/default/banks/${HINDSIGHT_BANK_ID}/operations?status=processing" | \
+                       python3 -c 'import sys, json; print(len(json.load(sys.stdin).get("operations", [])))' 2>/dev/null || echo "0")
+
+          if [ "$PENDING" = "0" ] && [ "$PROCESSING" = "0" ]; then
+            echo "All async operations complete"
+            break
+          fi
+          echo "  Waiting... ($PENDING pending, $PROCESSING processing)"
+          sleep 2
+        done
+
+        # Delete all knowledge pages
+        PAGES=$(curl -s "${HINDSIGHT_API_URL}/v1/default/banks/${HINDSIGHT_BANK_ID}/knowledge-base/tree" | \
+                python3 -c 'import sys, json; [print(p["id"]) for p in json.load(sys.stdin).get("nodes", [])]' 2>/dev/null)
+
+        if [ -n "$PAGES" ]; then
+          echo "$PAGES" | while read -r page_id; do
+            curl -s -X DELETE "${HINDSIGHT_API_URL}/v1/default/banks/${HINDSIGHT_BANK_ID}/knowledge-base/nodes/${page_id}" >/dev/null 2>&1
+          done
+          echo "Deleted knowledge pages"
+        fi
+
+        # Clear memories via DELETE endpoint
+        curl -s -X DELETE "${HINDSIGHT_API_URL}/v1/default/banks/${HINDSIGHT_BANK_ID}/memories" \
+          -H "Content-Type: application/json" 2>&1 && echo "Cleared memories" || echo "Memory clear skipped"
+
+  reset:
+    support: unsupported
+    reason: >-
+      Hindsight uses persistent memory banks. Create a new bank_id for
+      isolated benchmark runs.

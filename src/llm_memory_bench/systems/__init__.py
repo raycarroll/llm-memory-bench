@@ -7,6 +7,7 @@ from .bfcl_memory_kv import BFCLMemoryKVSystem
 from .claude_code import ClaudeCodeMemorySystem
 from .gbrain import GBrainMemorySystem
 from .gbrain_sweep import GBrainSweepSystem
+from .hindsight import HindsightMemorySystem
 from .mem0 import Mem0MemorySystem
 from .memoryhub import MemoryHubMemorySystem
 from .memoryhub_sweep import MemoryHubSweepSystem
@@ -20,6 +21,7 @@ SYSTEMS: dict[str, type[MemorySystem]] = {
     "claude_code": ClaudeCodeMemorySystem,
     "gbrain": GBrainMemorySystem,
     "gbrain_sweep": GBrainSweepSystem,
+    "hindsight": HindsightMemorySystem,
     "mem0": Mem0MemorySystem,
     "memoryhub": MemoryHubMemorySystem,
     "memoryhub_sweep": MemoryHubSweepSystem,

@@ -2,6 +2,15 @@ host:
   name: claude-code
   version: "2.1.294"
 
+# Optional: group runs for comparison and reproducibility
+experiment:
+  group_id: memoryhub-eager-baseline
+  runs: 3  # Run the same experiment 3 times to measure variance
+  metadata:
+    memory_system: memoryhub
+    rules_version: eager-2026-11
+    description: MemoryHub with eager loading, generated rules
+
 integration:
   profile: integrations/profiles/memoryhub/remote-http-v1/profile.yaml
   platform: claude-code
@@ -11,15 +20,23 @@ integration:
     MEMORYHUB_URL: "${MEMORYHUB_URL:-http://host.docker.internal:18080/mcp/}"
     MEMORYHUB_SEED_URL: "${MEMORYHUB_SEED_URL:-http://localhost:18080/mcp/}"
     MEMORYHUB_API_KEY: "${MEMORYHUB_API_KEY}"
+    OPENAI_API_KEY: "${OPENAI_API_KEY}"
+    ANTHROPIC_DEFAULT_OPUS_MODEL: "claude-sonnet-4-5@20250929"
+    ANTHROPIC_DEFAULT_SONNET_MODEL: "claude-sonnet-4-5@20250929"
+    ANTHROPIC_DEFAULT_HAIKU_MODEL: "claude-sonnet-4-5@20250929"
 
 model: claude-sonnet-4-5@20250929
 
 # Set true to retain benchmark containers for Podman/Docker inspection after a run.
+# Set require_isolation to false to allow cross-conversation memory accumulation
+# Set cleanup_before_run to false to skip memory system cleanup before benchmark
 container:
   keep_alive: true
+  require_isolation: false  # Allow memory to persist across conversations (realistic for MemoryHub)
+  cleanup_before_run: true  # Delete all memories before each benchmark run
 
-dataset: datasets/converted/task1.jsonl
+dataset: datasets/converted/bfcl_memory_student.yaml
 
-# The remote profile currently declares reset unsupported. Use one isolated
-# conversation until a provider-side reset/cleanup adapter is available.
+# BFCL has 10 conversations total, run them all
+# Each conversation is a user sharing information about their life
 max_conversations: 1

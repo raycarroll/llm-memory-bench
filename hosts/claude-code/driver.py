@@ -151,6 +151,24 @@ def _sdk_hook_event(message, capture_output: bool = False) -> dict | None:
     }
 
 
+async def _query_mcp_tools(mcp_servers: dict | None) -> list[dict]:
+    """Query configured MCP servers for their available tools."""
+    if not mcp_servers:
+        return []
+
+    tools_by_server = []
+
+    for server_name, server_config in mcp_servers.items():
+        # Return config info - actual tools are available once Claude connects
+        tools_by_server.append({
+            "server": server_name,
+            "status": "configured",
+            "type": server_config.get("type", "stdio"),
+        })
+
+    return tools_by_server
+
+
 async def feed_conversation(
     turns: list[dict],
     model: str | None = None,
@@ -166,6 +184,7 @@ async def feed_conversation(
     capture_hook_output = _capture_hook_output()
     cli_path = _configured_cli_path()
     runtime = _cli_metadata(cli_path)
+    available_tools = await _query_mcp_tools(mcp_servers)
 
     for i, turn in enumerate(turns):
         if turn["role"] != "user":
@@ -183,21 +202,34 @@ async def feed_conversation(
             "cli_path": cli_path,
         }
         if profile_mode:
+            # Determine allowed tools based on MCP servers
+            allowed_tool_patterns = []
+            if mcp_servers:
+                for server_name in mcp_servers.keys():
+                    # Allow all tools from configured MCP servers
+                    # Pattern must be mcp__<server>__* - bare wildcards not supported
+                    allowed_tool_patterns.append(f"mcp__{server_name}__*")
+            # Fallback for legacy memoryhub configs
+            if not allowed_tool_patterns:
+                allowed_tool_patterns = ["mcp__memoryhub__*"]
+
             option_values.update({
-                # The SDK does not load project-scoped files unless requested.
-                "setting_sources": ["project"],
+                # Load both project and user settings to allow user-level MCP registrations
+                # (e.g., Hindsight installed via their npm package)
+                "setting_sources": ["project", "user"],
                 # Pass the materialized MCP map explicitly and reject ambient
                 # MCP servers so a benchmark cannot inherit the operator's setup.
-                "mcp_servers": mcp_servers,
-                "strict_mcp_config": True,
+                # If no .mcp.json exists, don't set mcp_servers to allow user-level registrations
+                "mcp_servers": mcp_servers if mcp_servers else None,
+                "strict_mcp_config": bool(mcp_servers),  # Only strict if we have explicit config
                 # Observe the installed integration externally through the SDK
                 # stream; do not modify or wrap the integration hook script.
                 "include_hook_events": True,
                 # A headless benchmark cannot answer Claude's interactive
-                # permission prompt. Allow only tools exposed by the
-                # materialized memoryhub MCP server; dontAsk denies unrelated
-                # tools instead of hanging or silently bypassing policy.
-                "allowed_tools": ["mcp__memoryhub__*"],
+                # permission prompt. Allow only tools exposed by configured
+                # MCP servers; dontAsk denies unrelated tools instead of
+                # hanging or silently bypassing policy.
+                "allowed_tools": allowed_tool_patterns,
             })
 
         options = ClaudeAgentOptions(**option_values)
@@ -214,17 +246,20 @@ async def feed_conversation(
                 # blocks emitted while Claude is working. ResultMessage only
                 # contains the final text, so collect calls from the stream.
                 if message.__class__.__name__ == "AssistantMessage":
-                    for block in _field(message, "content", []) or []:
-                        block_type = _field(block, "type")
-                        if block_type in {"tool_use", "server_tool_use"}:
+                    content = _field(message, "content", []) or []
+                    for block in content:
+                        # SDK returns ToolUseBlock objects, not dicts with type field
+                        block_class = block.__class__.__name__
+                        # Debug: log all block types to stderr
+                        if block_class not in ("TextBlock", "ThinkingBlock"):
+                            print(f"DEBUG: Found block type: {block_class}", file=sys.stderr)
+                        if block_class == "ToolUseBlock":
+                            tool_name = _field(block, "name", "unknown")
+                            print(f"DEBUG: Capturing tool call: {tool_name}", file=sys.stderr)
                             tool_calls.append({
                                 "id": _field(block, "id"),
-                                "name": _field(block, "name", "unknown"),
-                                "arguments": _field(
-                                    block,
-                                    "input",
-                                    _field(block, "arguments", {}),
-                                ) or {},
+                                "name": tool_name,
+                                "arguments": _field(block, "input", {}) or {},
                             })
                 hook_event = _sdk_hook_event(message, capture_output=capture_hook_output)
                 if hook_event is not None:
@@ -256,6 +291,7 @@ async def feed_conversation(
         "session_id": session_id,
         "responses": responses,
         "runtime": runtime,
+        "available_tools": available_tools,
         "integration_events": [
             event
             for response in responses

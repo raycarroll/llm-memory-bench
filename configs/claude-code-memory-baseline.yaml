@@ -1,0 +1,36 @@
+host:
+  name: claude-code
+  version: "2.1.294"
+
+# No integration profile - use Claude Code's native auto-memory
+system:
+  name: claude_code
+
+# Use Vertex AI for model access
+system_env:
+  CLAUDE_CODE_USE_VERTEX: "1"
+  ANTHROPIC_DEFAULT_OPUS_MODEL: "claude-sonnet-4-5@20250929"
+  ANTHROPIC_DEFAULT_SONNET_MODEL: "claude-sonnet-4-5@20250929"
+  ANTHROPIC_DEFAULT_HAIKU_MODEL: "claude-sonnet-4-5@20250929"
+
+model: claude-sonnet-4-5@20250929
+
+# Experiment configuration
+experiment:
+  group_id: claude-native-baseline
+  runs: 3
+  metadata:
+    memory_system: claude_code
+    description: Claude Code native auto-memory (file-based with typed memories)
+
+# Container settings
+container:
+  keep_alive: true
+  require_isolation: false  # Allow memory persistence across conversations
+  cleanup_before_run: true
+
+# Use same dataset as MemoryHub experiments for comparison
+dataset: datasets/converted/bfcl_memory_student.yaml
+
+# Test with first conversation
+max_conversations: 1

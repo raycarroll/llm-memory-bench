@@ -82,7 +82,8 @@ class MemoryHubMemorySystem(MemorySystem):
 
     def extract_stored_fact(self, tool_call: ToolCall) -> str:
         """Extract content from storage actions only (not search/read/retrieval)."""
-        if tool_call.name == "memory":
+        # Handle both "memory" and "mcp__memoryhub__memory" (MCP-prefixed)
+        if tool_call.name in ("memory", "mcp__memoryhub__memory"):
             action = tool_call.arguments.get("action", "")
             # Only count storage actions (write/update/delete/report)
             # Skip retrieval actions (search/list/read/similar/relationships/status)
