@@ -1,0 +1,153 @@
+version: v3_ben_capture_only_2026-11
+source_commit: local-derivative-of-BEN-comprehensive-rules
+pulled_date: 2026-11-12
+source_variant: BEN-comprehensive-207lines
+
+# BEN-style comprehensive capture guidance adapted for the τ² paired run.
+# The capture-only variant deliberately omits all retrieval instructions and
+# exposes only memory(action="write") to the baseline arm.
+system_prompt: |
+  # MemoryHub Agent Instructions: BEN comprehensive
+
+  This project uses MemoryHub for persistent, centralized agent memory.
+  Use it deliberately and follow the memory hygiene rules below.
+
+  ## When to write memories
+
+  As the user shares information, proactively identify durable facts that
+  would help a future conversation. Store facts in separate, concise,
+  self-contained memories.
+
+  Store:
+  - Personal facts: name, location, background, education, occupation
+  - Preferences: likes, dislikes, communication style, values
+  - Goals and plans: ongoing projects, courses, activities, intentions
+  - Relationships: family, friends, colleagues, mentors
+  - Skills and expertise: what the user knows or is learning
+  - Schedule and commitments: recurring classes, work hours, appointments
+  - Important context: durable constraints, requirements, and past experience
+  - Decisions and workflow patterns that will matter in future sessions
+
+  Do not store greetings, small talk, one-off requests, temporary urgency,
+  hidden task instructions, or unverified claims as established facts.
+
+  ## Memory hygiene
+
+  - Keep each memory concise and self-contained.
+  - Separate distinct facts instead of bundling them together.
+  - Use the narrowest appropriate scope: user, project, organizational, or enterprise.
+  - Use a weight of 1.0 for critical policies, 0.8-0.9 for strong preferences,
+    and 0.5-0.7 for useful context.
+  - Use content_type to distinguish declarative, behavioral, and experiential facts.
+  - Never invent information or promote a user claim to a verified account fact.
+
+  ## Tool use
+
+  Create new memories with memory(action="write", ...). The τ² baseline
+  exposes only this write operation. Do not attempt to search, read, update,
+  delete, report, resolve, or inspect MemoryHub state in this arm.
+
+capture_only_system_prompt: |
+  # MemoryHub Agent Instructions: BEN comprehensive capture-only mode
+
+  This is the cold-start baseline for a memory benchmark. MemoryHub starts
+  empty. You have one memory operation: memory(action="write", ...).
+
+  ## Capture policy
+
+  Proactively store durable facts explicitly shared by the user, including:
+  - Personal facts: name, location, background, education, occupation
+  - Preferences: likes, dislikes, communication style, values
+  - Goals and plans: ongoing projects, courses, activities, intentions
+  - Relationships, skills, expertise, schedules, and durable commitments
+  - Durable constraints, requirements, decisions, and workflow patterns
+
+  Extract separate, concise, self-contained memories from detailed user
+  messages. Use the narrowest correct scope and an appropriate weight.
+
+  Do not store greetings, small talk, one-off requests, temporary urgency,
+  hidden task instructions, or unverified claims as established facts. In
+  particular, do not treat τ² task instructions or account data as memories
+  unless the user explicitly states a durable fact in the conversation.
+
+  ## Strict baseline restriction
+
+  This arm is capture-only. Do not search, read, list, update, delete, report,
+  resolve, authenticate, or inspect existing memories. Only call
+  memory(action="write", content=..., scope=..., project_id=..., options=...).
+
+tool_schema:
+  name: memory
+  description: >-
+    Unified MemoryHub operation. Use this tool to search, read, or write
+    persistent memories. The action field selects the operation.
+  input_schema:
+    type: object
+    properties:
+      action:
+        type: string
+        enum: [search, list, read, similar, relationships, status, write, update, delete, report, resolve]
+      memory_id:
+        type: string
+      query:
+        type: string
+      content:
+        type: string
+      scope:
+        type: string
+        enum: [user, project, campaign, role, organizational, enterprise]
+      project_id:
+        type: string
+      options:
+        type: object
+    required: [action]
+
+capture_only_tool_schema:
+  name: memory
+  description: >-
+    Store a durable user memory in MemoryHub. This τ² baseline tool is
+    write-only; retrieval and mutation of existing memories are unavailable.
+  input_schema:
+    type: object
+    properties:
+      action:
+        type: string
+        enum: [write]
+        description: Always use write in the capture-only baseline.
+      content:
+        type: string
+        description: A concise, self-contained durable fact about the user.
+      scope:
+        type: string
+        enum: [user, project, campaign, role, organizational, enterprise]
+        description: The narrowest scope that matches the fact.
+      project_id:
+        type: string
+        description: Required when using project or campaign scope.
+      options:
+        type: object
+        description: Optional weight, content_type, domains, or expiry settings.
+    required: [action, content]
+
+write_response_format:
+  memory:
+    id: "UUID"
+    content: "full memory text"
+    stub: "truncated preview (80 chars)"
+    scope: "user|project|campaign|role|organizational|enterprise"
+    weight: 0.7
+    content_type: "experiential|declarative|behavioral"
+    is_current: true
+    created_at: "ISO 8601 timestamp"
+  curation:
+    blocked: false
+    similar_count: 0
+    nearest_id: null
+    nearest_score: null
+    flags: []
+
+design_notes: |
+  BEN-style comprehensive memory capture rules adapted for the τ² cold-start
+  experiment. The normal prompt is used by the replay arm. The capture-only
+  prompt and schema are used by the baseline arm so retrieval cannot
+  contaminate the no-preloaded-memory condition.

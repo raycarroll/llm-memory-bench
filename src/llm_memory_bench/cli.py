@@ -19,6 +19,27 @@ from .pricing import estimate_cost
 from .runner import run_benchmark
 from .systems import get_system, list_systems
 
+
+def _write_json_without_overwrite(path: Path, data: dict) -> Path:
+    """Write JSON to a unique path, preserving any existing result file."""
+
+    path.parent.mkdir(parents=True, exist_ok=True)
+    candidate = path
+    timestamp = datetime.now(timezone.utc).strftime("%Y%m%d-%H%M%S")
+    suffix = 0
+    while True:
+        try:
+            with candidate.open("x", encoding="utf-8") as handle:
+                json.dump(data, handle, indent=2)
+            return candidate
+        except FileExistsError:
+            suffix += 1
+            disambiguator = f"-{suffix}" if suffix > 1 else ""
+            candidate = path.with_name(
+                f"{path.stem}_{timestamp}{disambiguator}{path.suffix}"
+            )
+
+
 def _token_summary(run_result) -> dict:
     total_input = run_result.preflight_input_tokens
     total_output = run_result.preflight_output_tokens
@@ -832,6 +853,12 @@ def value_visualize(result_file: str, output: str | None):
     default="simple",
 )
 @click.option("--mode", type=click.Choice(["prompt", "tool", "both"]), default="prompt")
+@click.option(
+    "--memory-setup-mode",
+    type=click.Choice(["seeded", "capture_first"]),
+    default="seeded",
+    help="Initialize the memory arm from fixtures or baseline-captured memories.",
+)
 @click.option("--max-turns", type=int, default=10)
 @click.option("--max-scenarios", type=int, default=None)
 @click.option("--user-sim-provider", default=None)
@@ -850,6 +877,7 @@ def value_run(
     model: str,
     system_name: str,
     mode: str,
+    memory_setup_mode: str,
     max_turns: int,
     max_scenarios: int | None,
     user_sim_provider: str | None,
@@ -875,6 +903,7 @@ def value_run(
         model=model,
         system=system_name,
         injection_mode=mode,
+        memory_setup_mode=memory_setup_mode,
         max_turns=max_turns,
         max_scenarios=max_scenarios,
         user_simulator_provider=user_sim_provider or provider,
@@ -968,6 +997,9 @@ def value_run(
                     for t in trial.turns
                 ],
                 "memory_tokens": trial.memory_tokens,
+                "initial_memories": trial.initial_memories,
+                "captured_memories": trial.captured_memories,
+                "memory_events": trial.memory_events,
                 "goal_status": trial.goal_status,
                 "completion_turn": trial.completion_turn,
                 "completion_validations": trial.completion_validations,
@@ -1011,6 +1043,171 @@ def value_run(
     _print_value_metrics(aggregated)
 
 
+@cli.command(name="tau2-value-run")
+@click.option("--domain", type=click.Choice(["airline", "retail", "telecom"]), required=True)
+@click.option("--task-ids", required=True, help="Comma-separated official τ² task IDs.")
+@click.option("--memory-plan", type=click.Path(exists=True), required=True)
+@click.option("--agent-model", default="openai/gpt-4.1")
+@click.option("--user-model", default="openai/gpt-4.1")
+@click.option("--memory-system", type=click.Choice(list_systems()), default="simple")
+@click.option(
+    "--memory-setup-mode",
+    type=click.Choice(["seeded", "capture_first"]),
+    default="capture_first",
+    help="Use declared seed memories or hand baseline writes to replay.",
+)
+@click.option("--seed", type=int, default=300)
+@click.option("--max-steps", type=int, default=20)
+@click.option(
+    "--memoryhub-live/--no-memoryhub-live",
+    default=False,
+    help="Use a configured real MemoryHub instance (requires memoryhub package).",
+)
+@click.option(
+    "--memoryhub-cleanup/--no-memoryhub-cleanup",
+    default=True,
+    help="Delete the task-scoped MemoryHub projects after each task.",
+)
+@click.option("--output", type=click.Path(), default=None)
+def tau2_value_run(
+    domain: str,
+    task_ids: str,
+    memory_plan: str,
+    agent_model: str,
+    user_model: str,
+    memory_system: str,
+    memory_setup_mode: str,
+    seed: int,
+    max_steps: int,
+    memoryhub_live: bool,
+    memoryhub_cleanup: bool,
+    output: str | None,
+):
+    """Run real τ² tasks as paired baseline-versus-memory experiments."""
+    from .value.tau2 import (
+        Tau2UnavailableError,
+        load_tau2_memory_plan,
+        run_tau2_value_benchmark,
+    )
+
+    task_id_list = [item.strip() for item in task_ids.split(",") if item.strip()]
+    plan = load_tau2_memory_plan(Path(memory_plan))
+    if plan.domain != domain:
+        raise click.UsageError(
+            f"Memory plan domain is {plan.domain!r}, but --domain is {domain!r}"
+        )
+    try:
+        result = run_tau2_value_benchmark(
+            plan,
+            task_ids=task_id_list,
+            agent_model=agent_model,
+            user_model=user_model,
+            memory_system=memory_system,
+            memory_setup_mode=memory_setup_mode,
+            seed=seed,
+            max_steps=max_steps,
+            memoryhub_live=memoryhub_live,
+            memoryhub_cleanup=memoryhub_cleanup,
+        )
+    except Tau2UnavailableError as exc:
+        console.print(f"[bold red]τ² unavailable:[/bold red] {exc}")
+        console.print(
+            "Install the upstream dependency first (preferably at a pinned commit): "
+            "pip install git+https://github.com/sierra-research/tau2-bench.git@"
+            "c06b07dd7c4d4ec61ba6ff9bcdf0b15dd7ef36d4"
+        )
+        raise SystemExit(1) from exc
+
+    output_path = _write_json_without_overwrite(
+        Path(output or f"results/tau2_value_{domain}_{datetime.now(timezone.utc).strftime('%Y%m%d-%H%M%S')}.json"),
+        result,
+    )
+    console.print(f"Results written to {output_path}")
+    for scenario in result["scenarios"]:
+        console.print(
+            f"  task={scenario['task_id']} "
+            f"baseline={scenario['baseline']['reward']} "
+            f"memory={scenario['memory_prompt']['reward']} "
+            f"delta={scenario['reward_delta']}"
+        )
+
+
+@cli.command(name="tau2-container-run")
+@click.option("--domain", type=click.Choice(["airline", "retail", "telecom"]), required=True)
+@click.option("--task-ids", required=True, help="Comma-separated official τ² task IDs.")
+@click.option("--memory-plan", type=click.Path(exists=True), required=True)
+@click.option("--agent-model", default="openai/gpt-4.1")
+@click.option("--user-model", default="openai/gpt-4.1")
+@click.option("--memory-system", type=click.Choice(list_systems()), default="simple")
+@click.option(
+    "--memory-setup-mode",
+    type=click.Choice(["seeded", "capture_first"]),
+    default="capture_first",
+    help="Use declared seed memories or hand baseline writes to replay.",
+)
+@click.option("--seed", type=int, default=300)
+@click.option("--max-steps", type=int, default=20)
+@click.option(
+    "--memoryhub-live/--no-memoryhub-live",
+    default=False,
+    help="Use a configured real MemoryHub instance inside the container.",
+)
+@click.option(
+    "--memoryhub-cleanup/--no-memoryhub-cleanup",
+    default=True,
+    help="Delete the task-scoped MemoryHub projects after each task.",
+)
+@click.option("--image", default=None, help="τ² image tag; defaults to the pinned image.")
+@click.option("--build/--no-build", default=True, help="Build the image if it is missing.")
+@click.option("--output", type=click.Path(), default=None)
+def tau2_container_run(
+    domain: str,
+    task_ids: str,
+    memory_plan: str,
+    agent_model: str,
+    user_model: str,
+    memory_system: str,
+    memory_setup_mode: str,
+    seed: int,
+    max_steps: int,
+    memoryhub_live: bool,
+    memoryhub_cleanup: bool,
+    image: str | None,
+    build: bool,
+    output: str | None,
+):
+    """Run τ² Value in a self-contained Docker/Podman image."""
+    from .value.tau2_container import DEFAULT_IMAGE, run_tau2_container
+
+    task_id_list = [item.strip() for item in task_ids.split(",") if item.strip()]
+    plan_path = Path(memory_plan)
+    output_path = Path(
+        output
+        or f"results/tau2_value_{domain}_{datetime.now(timezone.utc).strftime('%Y%m%d-%H%M%S')}.json"
+    )
+    try:
+        exit_code = run_tau2_container(
+            domain=domain,
+            task_ids=task_id_list,
+            memory_plan=plan_path,
+            agent_model=agent_model,
+            user_model=user_model,
+            memory_system=memory_system,
+            memory_setup_mode=memory_setup_mode,
+            seed=seed,
+            max_steps=max_steps,
+            memoryhub_live=memoryhub_live,
+            memoryhub_cleanup=memoryhub_cleanup,
+            output=output_path,
+            image=image or DEFAULT_IMAGE,
+            build=build,
+        )
+    except (FileNotFoundError, RuntimeError, OSError) as exc:
+        raise click.ClickException(str(exc)) from exc
+    if exit_code:
+        raise click.ClickException(f"τ² container exited with status {exit_code}")
+
+
 @cli.command(name="container-value-run")
 @click.option("--config", "config_path", type=click.Path(exists=True), required=True)
 @click.option("--scenarios", "scenarios_path", type=click.Path(exists=True), required=True)
@@ -1020,6 +1217,12 @@ def value_run(
 @click.option("--user-sim-model", default="gpt-4o")
 @click.option("--judge-provider", default="openai")
 @click.option("--judge-model", default="gpt-4o")
+@click.option(
+    "--memory-setup-mode",
+    type=click.Choice(["seeded", "capture_first"]),
+    default="seeded",
+    help="Initialize the memory arm from fixtures or baseline-captured memories.",
+)
 @click.option("--judge-during-run/--no-judge-during-run", default=True)
 @click.option("--output", type=click.Path(), default=None)
 @click.option("--visualize/--no-visualize", default=False)
@@ -1033,6 +1236,7 @@ def container_value_run(
     user_sim_model: str,
     judge_provider: str,
     judge_model: str,
+    memory_setup_mode: str,
     judge_during_run: bool,
     output: str | None,
     visualize: bool,
@@ -1055,6 +1259,7 @@ def container_value_run(
         model=container_config.model,
         system=container_config.system_name,
         injection_mode="integration",
+        memory_setup_mode=memory_setup_mode,
         max_turns=max_turns,
         max_scenarios=max_scenarios,
         user_simulator_provider=user_sim_provider,
@@ -1117,6 +1322,9 @@ def container_value_run(
                 "system_prompt": trial.system_prompt,
                 "final_response": trial.final_response,
                 "memory_tokens": trial.memory_tokens,
+                "initial_memories": trial.initial_memories,
+                "captured_memories": trial.captured_memories,
+                "memory_events": trial.memory_events,
                 "goal_status": trial.goal_status,
                 "completion_turn": trial.completion_turn,
                 "completion_validations": trial.completion_validations,
@@ -1465,6 +1673,10 @@ def bench(config_path: str, output: str | None):
                 except (json.JSONDecodeError, KeyError):
                     # If parsing fails, just store the raw log
                     conv_data["driver_log_raw"] = cr.driver_log
+
+            # Include hook storage events and retention calls from ConversationResult
+            conv_data["hook_storage_events"] = cr.hook_storage_events
+            conv_data["retention_calls"] = cr.retention_calls
 
             conversations.append(conv_data)
 

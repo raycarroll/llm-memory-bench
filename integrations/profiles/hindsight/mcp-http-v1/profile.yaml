@@ -108,10 +108,36 @@ lifecycle:
       - python3
       - -c
       - |
-        import json, os, subprocess
+        import json, os, subprocess, time, sys
 
         api_url = os.environ["HINDSIGHT_API_URL"]
         bank_id = os.environ["HINDSIGHT_BANK_ID"]
+
+        # Wait for async operations to complete before observing
+        print("Waiting for async operations to complete...", file=sys.stderr)
+        for i in range(30):
+            pending = subprocess.run(
+                ["curl", "-s", f"{api_url}/v1/default/banks/{bank_id}/operations?status=pending"],
+                capture_output=True, text=True
+            )
+            processing = subprocess.run(
+                ["curl", "-s", f"{api_url}/v1/default/banks/{bank_id}/operations?status=processing"],
+                capture_output=True, text=True
+            )
+
+            try:
+                pending_count = len(json.loads(pending.stdout).get("operations", []))
+                processing_count = len(json.loads(processing.stdout).get("operations", []))
+
+                if pending_count == 0 and processing_count == 0:
+                    print(f"All operations complete after {i*2}s", file=sys.stderr)
+                    break
+
+                print(f"  Waiting... ({pending_count} pending, {processing_count} processing)", file=sys.stderr)
+            except:
+                pass
+
+            time.sleep(2)
 
         # Query memories
         mem_result = subprocess.run(
@@ -128,11 +154,14 @@ lifecycle:
         documents = json.loads(doc_result.stdout) if doc_result.returncode == 0 else {"documents": []}
 
         # Tag memories
+        # World facts = direct extractions from conversation (have consolidated_at, metadata, context)
+        # Observations = derived/consolidated from world facts (have source_memory_ids)
         for item in memories.get("items", []):
             item["_benchmark_metadata"] = {
-                "is_direct": item.get("fact_type") == "observation",
-                "is_derived": item.get("fact_type") == "world",
-                "consolidated_at": item.get("consolidated_at")
+                "is_direct": item.get("fact_type") == "world",
+                "is_derived": item.get("fact_type") == "observation",
+                "consolidated_at": item.get("consolidated_at"),
+                "has_source": bool(item.get("source_memory_ids"))
             }
 
         # Format documents as retention_calls (without full content to avoid arg list issues)

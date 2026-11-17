@@ -28,6 +28,9 @@ class TrialResult:
     turns: list[TurnRecord] = field(default_factory=list)
     final_response: str = ""
     memory_tokens: int = 0
+    initial_memories: list[dict] = field(default_factory=list)
+    captured_memories: list[dict] = field(default_factory=list)
+    memory_events: list[dict] = field(default_factory=list)
     system_prompt: str = ""  # NEW: Store the actual system prompt used
     goal_status: str = "incomplete"
     completion_turn: int | None = None
@@ -257,16 +260,29 @@ async def run_value_trial(
     max_turns: int = 10,
     enable_search: bool = True,  # NEW: Control search tool availability
     completion_provider=None,
+    initial_memories: list[dict] | None = None,
+    capture_memories: bool = False,
 ) -> TrialResult:
     result = TrialResult(scenario_id=scenario.id, mode=mode)
 
-    base_prompt = memory_system.system_prompt()
+    prompt_mode = "capture_only" if capture_memories else "default"
+    base_prompt = memory_system.system_prompt_for_mode(prompt_mode)
     tools: list[dict] = []
-    memories_as_dicts = [m.model_dump() for m in scenario.memory_bank]
+    memories_as_dicts = (
+        [m.model_dump() for m in scenario.memory_bank]
+        if initial_memories is None
+        else list(initial_memories)
+    )
+    result.initial_memories = list(memories_as_dicts)
 
     # Add search tool to all trials (both baseline and memory)
     if enable_search:
         tools.append(SEARCH_TOOL_DEFINITION)
+
+    storage_definitions = memory_system.tool_definitions_for_mode(prompt_mode)
+    storage_tool_names = {definition["name"] for definition in storage_definitions}
+    if capture_memories:
+        tools.extend(storage_definitions)
 
     if mode == "memory_prompt":
         system_prompt = memory_system.inject_memories(base_prompt, memories_as_dicts)
@@ -285,7 +301,7 @@ async def run_value_trial(
         persona=scenario.persona_prompt,
         user_facts="\n".join(
             f"- {memory.fact}"
-            for memory in scenario.memory_bank
+            for memory in scenario.user_context_memories()
         ) or "None provided",
         task_prompt=scenario.task_prompt,
         outcomes="\n".join(
@@ -321,9 +337,63 @@ async def run_value_trial(
 
         # Handle tool calls (both search and memory recall)
         if response.tool_calls:
+            # Handle storage calls used by capture-first baselines.
+            storage_calls = [
+                tc for tc in response.tool_calls if tc.name in storage_tool_names
+            ]
+            if capture_memories and storage_calls:
+                def format_storage_result(tc):
+                    fact = memory_system.extract_stored_fact(tc)
+                    response_data = memory_system.format_tool_result(tc)
+                    if fact and response_data.get("status") != "error":
+                        entry = {
+                            "fact": fact,
+                            "category": tc.arguments.get("category", "captured"),
+                            "source": "baseline_conversation",
+                            "tool": tc.name,
+                        }
+                        if entry not in result.captured_memories:
+                            result.captured_memories.append(entry)
+                    result.memory_events.append(
+                        {
+                            "tool": tc.name,
+                            "arguments": tc.arguments,
+                            "stored_fact": fact or None,
+                            "response": response_data,
+                        }
+                    )
+                    return response_data
+
+                tool_msgs = agent_provider.build_tool_result_messages(
+                    response,
+                    format_tool_result=format_storage_result,
+                )
+                messages.extend(tool_msgs)
+
+                followup_start = time.monotonic()
+                followup = await agent_provider.generate(
+                    messages=messages,
+                    tools=tools,
+                    system=system_prompt,
+                )
+                followup_latency = (time.monotonic() - followup_start) * 1000
+                agent_text = followup.text
+                response_tokens_in = response.input_tokens + followup.input_tokens
+                response_tokens_out = response.output_tokens + followup.output_tokens
+                latency += followup_latency
+                result.turns.append(
+                    TurnRecord(
+                        role="agent",
+                        content=agent_text,
+                        tool_calls=response.tool_calls + followup.tool_calls,
+                        input_tokens=response_tokens_in,
+                        output_tokens=response_tokens_out,
+                        latency_ms=latency,
+                    )
+                )
+
             # Handle search tool calls
-            search_calls = [tc for tc in response.tool_calls if tc.name == "search_web"]
-            if search_calls:
+            elif search_calls := [tc for tc in response.tool_calls if tc.name == "search_web"]:
                 # Simulate search results
                 search_results = []
                 for tc in search_calls:
@@ -376,38 +446,49 @@ async def run_value_trial(
                 recall_calls = [tc for tc in response.tool_calls if tc.name in recall_names]
                 if recall_calls:
                     recall_result = memory_system.format_recall_result(memories_as_dicts)
-                tool_msgs = agent_provider.build_tool_result_messages(
-                    response,
-                    format_tool_result=lambda _tc: recall_result,
-                )
-                messages.extend(tool_msgs)
-
-                import json
-                result.memory_tokens = max(1, len(json.dumps(recall_result)) // 4)
-
-                followup_start = time.monotonic()
-                followup = await agent_provider.generate(
-                    messages=messages,
-                    tools=tools,
-                    system=system_prompt,
-                )
-                followup_latency = (time.monotonic() - followup_start) * 1000
-
-                agent_text = followup.text
-                response_tokens_in = response.input_tokens + followup.input_tokens
-                response_tokens_out = response.output_tokens + followup.output_tokens
-                latency += followup_latency
-
-                result.turns.append(
-                    TurnRecord(
-                        role="agent",
-                        content=agent_text,
-                        tool_calls=response.tool_calls + followup.tool_calls,
-                        input_tokens=response_tokens_in,
-                        output_tokens=response_tokens_out,
-                        latency_ms=latency,
+                    tool_msgs = agent_provider.build_tool_result_messages(
+                        response,
+                        format_tool_result=lambda _tc: recall_result,
                     )
-                )
+                    messages.extend(tool_msgs)
+
+                    import json
+                    result.memory_tokens = max(1, len(json.dumps(recall_result)) // 4)
+
+                    followup_start = time.monotonic()
+                    followup = await agent_provider.generate(
+                        messages=messages,
+                        tools=tools,
+                        system=system_prompt,
+                    )
+                    followup_latency = (time.monotonic() - followup_start) * 1000
+
+                    agent_text = followup.text
+                    response_tokens_in = response.input_tokens + followup.input_tokens
+                    response_tokens_out = response.output_tokens + followup.output_tokens
+                    latency += followup_latency
+
+                    result.turns.append(
+                        TurnRecord(
+                            role="agent",
+                            content=agent_text,
+                            tool_calls=response.tool_calls + followup.tool_calls,
+                            input_tokens=response_tokens_in,
+                            output_tokens=response_tokens_out,
+                            latency_ms=latency,
+                        )
+                    )
+                else:
+                    result.turns.append(
+                        TurnRecord(
+                            role="agent",
+                            content=agent_text,
+                            tool_calls=response.tool_calls,
+                            input_tokens=response.input_tokens,
+                            output_tokens=response.output_tokens,
+                            latency_ms=latency,
+                        )
+                    )
             else:
                 result.turns.append(
                     TurnRecord(
@@ -445,7 +526,11 @@ async def run_value_trial(
                         validator,
                         completion_provider,
                         memory_facts=(
-                            [memory.fact for memory in scenario.memory_bank]
+                            [
+                                str(memory.get("fact", ""))
+                                for memory in memories_as_dicts
+                                if memory.get("fact")
+                            ]
                             if mode != "baseline" else []
                         ),
                         conversation=[
@@ -556,12 +641,44 @@ async def run_value_benchmark(
         modes = ["baseline", config.injection_mode]
 
     run_result = ValueRunResult(config=config)
+    run_result.metadata["memory_setup_mode"] = config.memory_setup_mode
     start = time.monotonic()
 
     for scenario in scenarios:
         scenario_result = ScenarioResult(scenario_id=scenario.id)
 
-        for mode in modes:
+        if config.memory_setup_mode == "capture_first":
+            baseline = await run_value_trial(
+                scenario=scenario,
+                agent_provider=agent_provider,
+                user_provider=user_provider,
+                memory_system=memory_system,
+                mode="baseline",
+                max_turns=config.max_turns,
+                enable_search=True,
+                completion_provider=completion_provider,
+                initial_memories=[],
+                capture_memories=True,
+            )
+            scenario_result.trials["baseline"] = baseline
+            handoff_memories = list(baseline.captured_memories)
+            trial_modes = [mode for mode in modes if mode != "baseline"]
+        else:
+            scenario_result.trials["baseline"] = await run_value_trial(
+                scenario=scenario,
+                agent_provider=agent_provider,
+                user_provider=user_provider,
+                memory_system=memory_system,
+                mode="baseline",
+                max_turns=config.max_turns,
+                enable_search=True,
+                completion_provider=completion_provider,
+                initial_memories=[],
+            )
+            handoff_memories = [m.model_dump() for m in scenario.memory_bank]
+            trial_modes = [mode for mode in modes if mode != "baseline"]
+
+        for mode in trial_modes:
             trial = await run_value_trial(
                 scenario=scenario,
                 agent_provider=agent_provider,
@@ -571,6 +688,7 @@ async def run_value_benchmark(
                 max_turns=config.max_turns,
                 enable_search=True,  # Enable search tool for grounding
                 completion_provider=completion_provider,
+                initial_memories=handoff_memories,
             )
             scenario_result.trials[mode] = trial
 

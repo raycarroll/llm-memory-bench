@@ -176,6 +176,8 @@ async def feed_conversation(
     max_turns: int | None = None,
     profile_mode: bool = False,
     initial_session_id: str | None = None,
+    system_prompt_file: str | None = None,
+    system_prompt_mode: str = "append",
 ) -> dict:
     responses = []
     session_id = initial_session_id
@@ -185,6 +187,11 @@ async def feed_conversation(
     cli_path = _configured_cli_path()
     runtime = _cli_metadata(cli_path)
     available_tools = await _query_mcp_tools(mcp_servers)
+    benchmark_prompt = None
+    if system_prompt_file:
+        benchmark_prompt = Path(system_prompt_file).read_text(encoding="utf-8")
+        if not benchmark_prompt.strip():
+            raise ValueError(f"system prompt file is empty: {system_prompt_file}")
 
     for i, turn in enumerate(turns):
         if turn["role"] != "user":
@@ -201,6 +208,26 @@ async def feed_conversation(
             # CLAUDE_CODE_VERSION in the image.
             "cli_path": cli_path,
         }
+        if benchmark_prompt:
+            if system_prompt_mode == "append":
+                option_values["system_prompt"] = {
+                    "type": "preset",
+                    "preset": "claude_code",
+                    "append": benchmark_prompt,
+                    # Rebuild the prompt for each request so resumed benchmark
+                    # sessions cannot retain an older prompt snapshot.
+                    "snapshot": False,
+                }
+            elif system_prompt_mode == "replace":
+                option_values["system_prompt"] = {
+                    "type": "custom",
+                    "prompt": benchmark_prompt,
+                    "snapshot": False,
+                }
+            else:
+                raise ValueError(
+                    "system_prompt_mode must be 'append' or 'replace'"
+                )
         if profile_mode:
             # Determine allowed tools based on MCP servers
             allowed_tool_patterns = []
@@ -314,6 +341,16 @@ def main():
         action="store_true",
         help="Load only the materialized project integration and its settings",
     )
+    parser.add_argument(
+        "--system-prompt-file",
+        help="Append or replace the Claude Code system prompt with this text file",
+    )
+    parser.add_argument(
+        "--system-prompt-mode",
+        choices=("append", "replace"),
+        default="append",
+        help="How to apply --system-prompt-file (default: append)",
+    )
     args = parser.parse_args()
 
     if args.turns_file:
@@ -331,6 +368,8 @@ def main():
             max_turns=args.max_turns,
             profile_mode=args.profile_mode,
             initial_session_id=args.resume,
+            system_prompt_file=args.system_prompt_file,
+            system_prompt_mode=args.system_prompt_mode,
         ))
     except Exception as exc:
         # stdout is a machine-readable boundary consumed by the host runner.

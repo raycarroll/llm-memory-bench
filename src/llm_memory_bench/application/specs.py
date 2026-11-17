@@ -15,7 +15,7 @@ class RunSpec(BaseModel):
     and a future EvalHub adapter can all submit the same specification.
     """
 
-    kind: Literal["value", "extraction"] = "value"
+    kind: Literal["value", "tau2", "extraction"] = "value"
     execution: Literal["api", "container"] = "api"
     dataset_path: str
     container_config_path: str | None = None
@@ -24,6 +24,7 @@ class RunSpec(BaseModel):
     model: str = "gpt-4o"
     system: str = "simple"
     mode: str = "prompt"
+    memory_setup_mode: Literal["seeded", "capture_first"] = "seeded"
     max_turns: int = Field(default=10, ge=1)
     max_scenarios: int | None = Field(default=None, ge=1)
     max_conversations: int | None = Field(default=None, ge=1)
@@ -35,6 +36,16 @@ class RunSpec(BaseModel):
     api_key_env: str | None = None
     max_total_tokens: int | None = Field(default=None, ge=1)
     max_cost_usd: float | None = Field(default=None, gt=0)
+    tau2_domain: Literal["airline", "retail", "telecom"] | None = None
+    tau2_task_ids: list[str] = Field(default_factory=list)
+    tau2_memory_plan: str | None = None
+    tau2_agent_model: str = "openai/gpt-4.1"
+    tau2_user_model: str = "openai/gpt-4.1"
+    tau2_memory_system: str = "simple"
+    tau2_seed: int = 300
+    tau2_max_steps: int = Field(default=20, ge=1)
+    tau2_memoryhub_live: bool = False
+    tau2_memoryhub_cleanup: bool = True
 
     def value_config(self) -> ValueRunConfig:
         if self.kind != "value":
@@ -44,6 +55,7 @@ class RunSpec(BaseModel):
             model=self.model,
             system=self.system,
             injection_mode=self.mode,
+            memory_setup_mode=self.memory_setup_mode,
             max_turns=self.max_turns,
             max_scenarios=self.max_scenarios,
             judge_during_run=self.judge_during_run,
@@ -68,6 +80,7 @@ class RunSpec(BaseModel):
             model=container_model,
             system="memoryhub",
             injection_mode="integration",
+            memory_setup_mode=self.memory_setup_mode,
             max_turns=self.max_turns,
             max_scenarios=self.max_scenarios,
             judge_during_run=self.judge_during_run,
@@ -95,3 +108,17 @@ class RunSpec(BaseModel):
 
     def dataset(self) -> Path:
         return Path(self.dataset_path)
+
+
+class EvaluationSpec(BaseModel):
+    """Serializable configuration for evaluating saved benchmark results."""
+
+    result_paths: list[str] = Field(min_length=1)
+    dataset_path: str | None = None
+    matcher: Literal["hybrid", "embedding", "llm", "exact", "alpsbench"] = "hybrid"
+    judge_provider: Literal["openai", "anthropic", "litellm", "vertex"] = "openai"
+    judge_model: str = "gpt-4o"
+    api_key_env: str | None = None
+
+    def dataset(self) -> Path | None:
+        return Path(self.dataset_path) if self.dataset_path else None

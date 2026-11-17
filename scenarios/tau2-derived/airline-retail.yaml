@@ -1,5 +1,5 @@
 scenarios:
-  - id: tau2-airline-cancel-refund
+  - id: tau2-derived-airline-cancel-refund
     memory_bank:
       - fact: "The user is travelling with an infant."
         category: personal
@@ -20,7 +20,7 @@ scenarios:
     validators:
       - type: llm_judge
 
-  - id: tau2-airline-change-seat
+  - id: tau2-derived-airline-change-seat
     memory_bank:
       - fact: "The user is travelling with a two-year-old child."
         category: personal
@@ -41,7 +41,7 @@ scenarios:
     validators:
       - type: llm_judge
 
-  - id: tau2-airline-baggage
+  - id: tau2-derived-airline-baggage
     memory_bank:
       - fact: "The user is travelling for a week-long business trip."
         category: context
@@ -62,7 +62,7 @@ scenarios:
     validators:
       - type: llm_judge
 
-  - id: tau2-airline-disruption
+  - id: tau2-derived-airline-disruption
     memory_bank:
       - fact: "The user has an important work presentation the morning after arrival."
         category: constraint
@@ -83,7 +83,7 @@ scenarios:
     validators:
       - type: llm_judge
 
-  - id: tau2-airline-accessibility
+  - id: tau2-derived-airline-accessibility
     memory_bank:
       - fact: "The user uses a wheelchair and needs airport assistance."
         category: accessibility
@@ -104,7 +104,7 @@ scenarios:
     validators:
       - type: llm_judge
 
-  - id: tau2-retail-return
+  - id: tau2-derived-retail-return
     memory_bank:
       - fact: "The user bought the item as a gift for a colleague."
         category: context
@@ -125,7 +125,7 @@ scenarios:
     validators:
       - type: llm_judge
 
-  - id: tau2-retail-order-status
+  - id: tau2-derived-retail-order-status
     memory_bank:
       - fact: "The user needs the order before a birthday celebration this weekend."
         category: constraint
@@ -146,7 +146,7 @@ scenarios:
     validators:
       - type: llm_judge
 
-  - id: tau2-retail-address-change
+  - id: tau2-derived-retail-address-change
     memory_bank:
       - fact: "The user recently moved and the saved delivery address may be outdated."
         category: context
@@ -167,7 +167,7 @@ scenarios:
     validators:
       - type: llm_judge
 
-  - id: tau2-retail-subscription
+  - id: tau2-derived-retail-subscription
     memory_bank:
       - fact: "The user is trying to reduce recurring monthly expenses."
         category: constraint
@@ -189,7 +189,7 @@ scenarios:
     validators:
       - type: llm_judge
 
-  - id: tau2-retail-wrong-item
+  - id: tau2-derived-retail-wrong-item
     memory_bank:
       - fact: "The user is leaving for a trip in three days."
         category: constraint

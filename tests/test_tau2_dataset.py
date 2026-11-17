@@ -3,8 +3,8 @@ from pathlib import Path
 from llm_memory_bench.value.dataset import load_value_dataset
 
 
-def test_curated_tau2_dataset_loads_as_goal_scenarios():
-    dataset = load_value_dataset(Path("scenarios/tau2/airline-retail.yaml"))
+def test_curated_tau2_derived_dataset_loads_as_goal_scenarios():
+    dataset = load_value_dataset(Path("scenarios/tau2-derived/airline-retail.yaml"))
 
     assert len(dataset.scenarios) == 10
     assert len({scenario.id for scenario in dataset.scenarios}) == 10

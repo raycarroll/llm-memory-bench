@@ -199,7 +199,11 @@ async def evaluate_value_run(
                 continue
 
             memory_validations: list[dict] = []
-            memory_facts = [memory.fact for memory in scenario.memory_bank]
+            memory_facts = [
+                str(memory.get("fact", ""))
+                for memory in trial.initial_memories
+                if memory.get("fact")
+            ]
             for validator in scenario.effective_validators():
                 memory_validations.extend(
                     await validate_outcomes(

@@ -61,6 +61,8 @@ class RunConfig:
     experiment_group: str | None = None  # Group ID for comparing/aggregating runs
     experiment_metadata: dict[str, str] = field(default_factory=dict)  # Additional experiment context
     experiment_runs: int = 1  # Number of times to run this experiment
+    system_prompt_file: str | None = None  # Optional prompt snapshot for container runs
+    system_prompt_mode: str = "append"  # "append" to Claude Code preset or "replace"
 
     @classmethod
     def from_yaml(cls, path: Path) -> RunConfig:
@@ -102,6 +104,24 @@ class RunConfig:
         cleanup_before_run = container.get("cleanup_before_run", True)
         if not isinstance(cleanup_before_run, bool):
             raise ValueError("container.cleanup_before_run must be a boolean")
+        system_prompt_file = container.get("system_prompt_file")
+        if system_prompt_file is not None:
+            if not isinstance(system_prompt_file, str) or not system_prompt_file.strip():
+                raise ValueError("container.system_prompt_file must be a non-empty path")
+            prompt_path = Path(system_prompt_file)
+            if not prompt_path.is_absolute():
+                config_relative = Path(path).resolve().parent / prompt_path
+                prompt_path = (
+                    config_relative
+                    if config_relative.exists()
+                    else PROJECT_ROOT / prompt_path
+                )
+            if not prompt_path.is_file():
+                raise ValueError(f"container.system_prompt_file does not exist: {prompt_path}")
+            system_prompt_file = str(prompt_path.resolve())
+        system_prompt_mode = container.get("system_prompt_mode", "append")
+        if system_prompt_mode not in {"append", "replace"}:
+            raise ValueError("container.system_prompt_mode must be 'append' or 'replace'")
         if integration_profile:
             profile_path = Path(integration_profile)
             if not profile_path.is_absolute():
@@ -140,6 +160,8 @@ class RunConfig:
             experiment_group=experiment.get("group_id"),
             experiment_metadata=experiment.get("metadata", {}),
             experiment_runs=experiment_runs,
+            system_prompt_file=system_prompt_file,
+            system_prompt_mode=system_prompt_mode,
         )
 
     @property
@@ -489,13 +511,15 @@ def _emit_container_output(container_id: str, text: str) -> None:
 
     if not text:
         return
-    encoded = base64.b64encode(text.encode("utf-8", errors="replace")).decode("ascii")
+    # Use stdin instead of command-line argument to avoid "Argument list too long" errors
     result = _docker(
         "exec",
+        "-i",  # Keep stdin open
         container_id,
         "bash",
         "-lc",
-        f"printf '%s' '{encoded}' | base64 -d > {_CONTAINER_LOG_FIFO}",
+        f"base64 -d > {_CONTAINER_LOG_FIFO}",
+        input=base64.b64encode(text.encode("utf-8", errors="replace")).decode("ascii"),
         capture_output=True,
         text=True,
         check=False,
@@ -585,12 +609,60 @@ def install_integration(
         console.print("  Integration installed successfully.", style="green")
 
 
+def _load_container_system_prompt(path: str) -> str:
+    """Load raw prompt text or the ``system_prompt`` field from YAML."""
+
+    prompt_path = Path(path)
+    raw = prompt_path.read_text(encoding="utf-8")
+    if prompt_path.suffix.lower() in {".yaml", ".yml"}:
+        payload = yaml.safe_load(raw)
+        if not isinstance(payload, dict) or not isinstance(payload.get("system_prompt"), str):
+            raise RuntimeError(
+                f"Container prompt YAML must contain a string system_prompt: {prompt_path}"
+            )
+        return payload["system_prompt"].strip() + "\n"
+    if not raw.strip():
+        raise RuntimeError(f"Container prompt file is empty: {prompt_path}")
+    return raw
+
+
+def install_container_system_prompt(
+    container_id: str,
+    config: RunConfig,
+) -> str | None:
+    """Copy an optional benchmark prompt into the running container."""
+
+    if not config.system_prompt_file:
+        return None
+
+    prompt_text = _load_container_system_prompt(config.system_prompt_file)
+    with tempfile.NamedTemporaryFile(
+        mode="w", encoding="utf-8", suffix=".txt", delete=False
+    ) as handle:
+        handle.write(prompt_text)
+        local_path = Path(handle.name)
+
+    try:
+        container_path = "/tmp/llm-memory-bench-system-prompt.txt"
+        _docker(
+            "cp",
+            str(local_path),
+            f"{container_id}:{container_path}",
+            capture_output=True,
+        )
+        return container_path
+    finally:
+        local_path.unlink(missing_ok=True)
+
+
 def drive_conversation(
     container_id: str,
     conversation: Conversation,
     model: str | None = None,
     profile_mode: bool = False,
     session_id: str | None = None,
+    system_prompt_file: str | None = None,
+    system_prompt_mode: str = "append",
 ) -> str:
     user_turns = [
         {"role": t.role, "content": t.content}
@@ -622,6 +694,9 @@ def drive_conversation(
         cmd.append("--profile-mode")
     if session_id:
         cmd.extend(["--resume", session_id])
+    if system_prompt_file:
+        cmd.extend(["--system-prompt-file", system_prompt_file])
+        cmd.extend(["--system-prompt-mode", system_prompt_mode])
 
     result = _exec(container_id, cmd, timeout=1800)  # 30 minutes for long conversations
 
@@ -731,6 +806,10 @@ def collect_environment(container_id: str, config: RunConfig) -> dict:
         "model": config.model,
         "system_env": config.system_env,
         "timestamp": datetime.now(timezone.utc).isoformat(),
+        "container_prompt": {
+            "file": config.system_prompt_file,
+            "mode": config.system_prompt_mode,
+        } if config.system_prompt_file else None,
     }
 
     result = _docker(
@@ -986,6 +1065,7 @@ def run_benchmark(config: RunConfig) -> BenchResult:
         else:
             assert workspace_tmp is not None
             install_integration(container_id, workspace_tmp.name, profile)
+        container_prompt_path = install_container_system_prompt(container_id, config)
 
         # Clean integration state before benchmark (if enabled)
         if config.cleanup_before_run and profile is not None and project_id is not None:
@@ -1038,6 +1118,8 @@ def run_benchmark(config: RunConfig) -> BenchResult:
                 conversation,
                 model=config.model,
                 profile_mode=profile is not None,
+                system_prompt_file=container_prompt_path,
+                system_prompt_mode=config.system_prompt_mode,
             )
             if profile is None:
                 stored = query_stored(container_id)
@@ -1047,22 +1129,52 @@ def run_benchmark(config: RunConfig) -> BenchResult:
                 stored, retention_calls = query_integration(container_id, profile, project_id)
             ground_truth = extract_ground_truth(conversation)
 
-            # Extract hook storage events for visibility (similar to tool calls)
+            # Extract hook calls for visibility (what hooks were called and with what input)
             hook_storage_events = []
+            hook_commands = {}
             try:
+                # Read hook commands from settings if available
+                if profile is not None:
+                    settings_result = _exec(container_id, ["cat", "/workspace/.claude/settings.json"], timeout=5)
+                    if settings_result.returncode == 0:
+                        try:
+                            settings = json.loads(settings_result.stdout)
+                            hooks_config = settings.get("hooks", {})
+                            for hook_name, hook_list in hooks_config.items():
+                                if isinstance(hook_list, list) and len(hook_list) > 0:
+                                    first_hook = hook_list[0]
+                                    if isinstance(first_hook, dict) and "hooks" in first_hook:
+                                        hook_specs = first_hook["hooks"]
+                                        if isinstance(hook_specs, list) and len(hook_specs) > 0:
+                                            hook_commands[hook_name] = hook_specs[0].get("command", "")
+                        except (json.JSONDecodeError, KeyError):
+                            pass
+
                 driver_data = json.loads(output)
-                for response in driver_data.get("responses", []):
+
+                # Build conversation context for each turn
+                for idx, response in enumerate(driver_data.get("responses", [])):
+                    turn_events = []
+
                     for event in response.get("integration_events", []):
                         if event.get("name") == "integration.hook_lifecycle":
                             details = event.get("details", {})
-                            # Capture Stop hook responses which contain what was stored
-                            if details.get("hook_event") == "Stop" and details.get("phase") == "hook_response":
-                                hook_storage_events.append({
-                                    "hook": details.get("hook_event"),
+                            hook_name = details.get("hook_event")
+                            phase = details.get("phase")
+
+                            # Capture hook_response (what the hook did)
+                            if phase == "hook_response":
+                                turn_events.append({
+                                    "hook": hook_name,
+                                    "command": hook_commands.get(hook_name, ""),
+                                    "turn": idx,
+                                    "user_message": conversation.turns[idx].content[:200] if idx < len(conversation.turns) and conversation.turns[idx].role == "user" else None,
                                     "output_preview": details.get("hook_output", "")[:500] if "hook_output" in details else None,
                                     "exit_code": details.get("exit_code"),
                                 })
-            except (json.JSONDecodeError, KeyError):
+
+                    hook_storage_events.extend(turn_events)
+            except (json.JSONDecodeError, KeyError, IndexError):
                 pass
 
             conv_result = ConversationResult(

@@ -1,0 +1,13 @@
+.git
+.codex
+.serena
+.tau2-upstream
+.venv
+.venv-*
+__pycache__
+*.pyc
+results
+docs
+tests
+dist
+build

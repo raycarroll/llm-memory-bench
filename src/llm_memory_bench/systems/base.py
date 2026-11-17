@@ -24,10 +24,23 @@ class MemorySystem(ABC):
         """The actual system prompt this memory system uses."""
         ...
 
+    def system_prompt_for_mode(self, mode: str = "default") -> str:
+        """Return a mode-specific prompt when a benchmark needs one.
+
+        Memory systems that do not distinguish modes use their normal prompt.
+        τ² uses ``capture_only`` for the cold-start baseline and ``replay``
+        for the arm that can read and write memories.
+        """
+        return self.system_prompt()
+
     @abstractmethod
     def tool_definitions(self) -> list[dict]:
         """The actual MCP/tool schemas this system exposes to the LLM."""
         ...
+
+    def tool_definitions_for_mode(self, mode: str = "default") -> list[dict]:
+        """Return mode-specific tool schemas when supported."""
+        return self.tool_definitions()
 
     @abstractmethod
     def extract_stored_fact(self, tool_call: ToolCall) -> str | dict:

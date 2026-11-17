@@ -149,7 +149,7 @@ llm-memory-bench value-run \
   --max-turns 5
 
 # 3. View results
-# (evaluation step coming soon)
+# value-run evaluates the paired trials and writes JSON; add --visualize for HTML
 ```
 
 The default provider and model are OpenAI `gpt-4o`. Set `OPENAI_API_KEY` before running, or override them with `--provider` and `--model`.
@@ -180,3 +180,21 @@ See [metrics.py](metrics.py) for implementation.
 
 **ROI:**
 - `value_per_token` - quality_delta / memory_overhead
+
+## Faithful τ² runs
+
+Value runs support two memory setup modes:
+
+- `seeded`: use the scenario memory bank as the memory arm's initial state.
+- `capture_first`: run a cold baseline with memory-writing tools, then use its
+  captured memories as the memory arm's initial state.
+
+The mode is selected with `memory_setup_mode` in `ValueRunConfig` or
+`--memory-setup-mode` in the CLI. User-simulator facts are kept separate from
+the agent-visible memory handoff when a scenario provides `user_facts`.
+
+Use `tau2-value-run` when the task must execute inside the real τ² environment
+and use τ²'s own reward. The command takes official τ² task IDs plus a separate
+task-to-memory plan, runs fresh matched baseline and memory-prompt environments,
+and records τ² rewards alongside harness telemetry. See
+[docs/tau2-value.md](../../../docs/tau2-value.md).

@@ -2,7 +2,14 @@ import asyncio
 import json
 from pathlib import Path
 
-from llm_memory_bench.application import RunSpec
+from llm_memory_bench.application import (
+    EvaluationSpec,
+    ExperimentOutput,
+    ExtractionExperiment,
+    RunSpec,
+    Tau2Experiment,
+    ValueExperiment,
+)
 from llm_memory_bench.application.run_service import RunService, _jsonable
 from llm_memory_bench.value.container_runner import _parse_agent_response
 
@@ -23,6 +30,18 @@ def test_value_run_spec_maps_to_existing_config():
     assert config.max_scenarios == 2
     assert config.user_simulator_provider == "litellm"
     assert config.judge_model == "test-model"
+
+
+def test_value_run_spec_maps_memory_setup_mode():
+    spec = RunSpec(
+        dataset_path="scenarios/test-value.yaml",
+        execution="container",
+        container_config_path="configs/claude-memoryhub-remote.yaml",
+        memory_setup_mode="capture_first",
+    )
+
+    assert spec.value_config().memory_setup_mode == "capture_first"
+    assert spec.container_value_config("claude-test").memory_setup_mode == "capture_first"
 
 
 def test_container_value_run_spec_maps_to_claude_and_remote_judging():
@@ -57,6 +76,28 @@ def test_run_service_uses_stable_run_id_shape(tmp_path):
     assert run_id.endswith("_value_openai_gpt-4o_simple")
 
 
+def test_experiment_implementations_have_distinct_kinds(tmp_path):
+    assert ExtractionExperiment().kind == "extraction"
+    assert ValueExperiment().kind == "value"
+    assert Tau2Experiment(tmp_path).kind == "tau2"
+
+
+def test_run_service_dispatches_to_experiment_implementation(tmp_path, monkeypatch):
+    service = RunService(tmp_path)
+    spec = RunSpec(kind="extraction", dataset_path="datasets/test_sequential.yaml")
+    calls = []
+
+    async def fake_extraction_run(received_spec, run_id):
+        calls.append((received_spec, run_id))
+        return ExperimentOutput({"run": {"conversation_results": []}})
+
+    monkeypatch.setattr(service.extraction, "run", fake_extraction_run)
+    asyncio.run(service.execute(spec))
+
+    assert calls[0][0] is spec
+    assert calls[0][1].endswith("_extraction_openai_gpt-4o_simple")
+
+
 def test_jsonable_serializes_run_spec():
     spec = RunSpec(dataset_path="scenarios/test-value.yaml")
 
@@ -66,14 +107,49 @@ def test_jsonable_serializes_run_spec():
     assert result["dataset_path"] == "scenarios/test-value.yaml"
 
 
+def test_evaluation_spec_defaults_to_openai_hybrid():
+    spec = EvaluationSpec(result_paths=["results/run.json"])
+
+    assert spec.matcher == "hybrid"
+    assert spec.judge_provider == "openai"
+    assert spec.judge_model == "gpt-4o"
+
+
+def test_run_service_converts_native_stored_memories_to_storage_calls():
+    run_data = {
+        "config": {"system": "memoryhub", "provider": "claude-code-container", "model": "test"},
+        "conversations": [{
+            "conversation_id": "conversation-1",
+            "stored": [{"content": "User prefers early flights."}],
+            "turns": [{
+                "turn_index": 0,
+                "role": "assistant",
+                "tool_calls": [{
+                    "name": "mcp__memoryhub__memory",
+                    "arguments": {"action": "search", "query": "flight"},
+                }],
+            }],
+        }],
+    }
+
+    result = RunService._run_result_from_json(run_data)
+    calls = result.conversation_results[0].turn_results[0].tool_calls
+
+    assert calls[-1].name == "memory"
+    assert calls[-1].arguments["action"] == "write"
+    assert calls[-1].arguments["content"] == "User prefers early flights."
+
+
 def test_run_service_writes_result_raw_output_and_log_artifacts(tmp_path, monkeypatch):
     service = RunService(tmp_path)
     spec = RunSpec(dataset_path="scenarios/test-value.yaml")
 
-    async def fake_execute_value(_spec):
-        return {"run": {"scenario_results": [{"scenario_id": "goal-1"}]}}
+    async def fake_value_run(_spec, _run_id):
+        return ExperimentOutput(
+            {"run": {"scenario_results": [{"scenario_id": "goal-1"}]}}
+        )
 
-    monkeypatch.setattr(service, "_execute_value", fake_execute_value)
+    monkeypatch.setattr(service.value, "run", fake_value_run)
     payload = asyncio.run(service.execute(spec))
 
     for key in ("output_path", "raw_output_path", "log_path"):

@@ -37,5 +37,16 @@ versions:
       of facts to store (personal, preferences, goals, etc.) and examples
       of fact decomposition from user messages.
     default: true
+  - version: v3_ben_capture_only_2026-11
+    commit: local-derivative-of-BEN-comprehensive-rules
+    pulled: 2026-11-12
+    notes: |
+      BEN-style comprehensive rules adapted for τ².
+      Includes a capture-only prompt and write-only memory(action=write)
+      schema for the baseline arm, plus a full prompt/schema for replay.
+      The existing BEN source rule file is referenced by project documentation
+      but is not present in this checkout; this artifact preserves its
+      documented comprehensive categories and restrictions.
+    default: false
 
 default_version: v2_proactive_2026-11

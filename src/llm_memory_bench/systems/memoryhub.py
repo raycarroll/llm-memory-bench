@@ -69,9 +69,28 @@ class MemoryHubMemorySystem(MemorySystem):
         """Return system prompt from loaded YAML."""
         return self._prompts["system_prompt"]
 
+    def system_prompt_for_mode(self, mode: str = "default") -> str:
+        """Return the full or τ² baseline capture-only prompt."""
+        if mode == "capture_only":
+            return self._prompts.get(
+                "capture_only_system_prompt", self.system_prompt()
+            )
+        return self.system_prompt()
+
     def tool_definitions(self) -> list[dict]:
         """Convert tool schema from YAML to Anthropic tool format."""
-        tool_schema = self._prompts["tool_schema"]
+        return self._tool_definitions_from_schema(self._prompts["tool_schema"])
+
+    def tool_definitions_for_mode(self, mode: str = "default") -> list[dict]:
+        """Return a write-only schema for τ² cold-start capture."""
+        if mode == "capture_only" and self._prompts.get("capture_only_tool_schema"):
+            return self._tool_definitions_from_schema(
+                self._prompts["capture_only_tool_schema"]
+            )
+        return self.tool_definitions()
+
+    @staticmethod
+    def _tool_definitions_from_schema(tool_schema: dict) -> list[dict]:
         return [
             {
                 "name": tool_schema["name"],
@@ -79,6 +98,20 @@ class MemoryHubMemorySystem(MemorySystem):
                 "input_schema": tool_schema["input_schema"],
             }
         ]
+
+    def validate_tool_call_for_mode(self, tool_call: ToolCall, mode: str) -> str | None:
+        """Reject retrieval or mutation actions unavailable in capture-only mode."""
+        if mode != "capture_only":
+            return None
+        if tool_call.name not in ("memory", "mcp__memoryhub__memory"):
+            return None
+        action = tool_call.arguments.get("action", "")
+        if action != "write":
+            return (
+                "This τ² baseline is capture-only. Only memory(action='write') "
+                "is available; read, search, update, delete, and status are disabled."
+            )
+        return None
 
     def extract_stored_fact(self, tool_call: ToolCall) -> str:
         """Extract content from storage actions only (not search/read/retrieval)."""

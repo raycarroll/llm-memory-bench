@@ -1,9 +1,8 @@
 """Value benchmark execution through a real containerised agent.
 
-This module deliberately does not reuse the API-level memory adapters.  The
-baseline runs Claude Code without a memory integration; the memory runs seed
-the external provider and then execute Claude Code with the materialized
-integration profile.
+This module deliberately does not reuse the API-level memory adapters.  It
+supports either a seeded baseline/memory comparison or a capture-first flow
+where an empty integrated baseline is replayed into a fresh memory arm.
 """
 
 from __future__ import annotations
@@ -24,6 +23,8 @@ from ..bench import (
     install_integration,
     load_integration,
     materialize_integration,
+    cleanup_integration,
+    query_integration,
     resolved_system_environment,
     start_container,
     stop_container,
@@ -90,6 +91,55 @@ def _scenario_seed_plan(scenario: ValueScenario, provider: str) -> SeedPlan:
         provider=provider,
         mode="declarative",
         memories=memories,
+        fixture_hash=hashlib.sha256(canonical.encode("utf-8")).hexdigest(),
+    )
+
+
+def _captured_seed_plan(
+    scenario: ValueScenario,
+    provider: str,
+    captured_memories: list[dict[str, Any]],
+) -> SeedPlan:
+    """Convert provider-observed baseline memories into a replay seed plan."""
+
+    memories = []
+    for item in captured_memories:
+        content = (
+            item.get("content")
+            or item.get("text")
+            or item.get("value")
+            or item.get("fact")
+        )
+        if not content:
+            continue
+        memories.append(
+            SeedMemory(
+                content=str(content),
+                scope="project",
+                metadata={
+                    "category": item.get("category", "captured"),
+                    "source": "baseline_conversation",
+                },
+                force=True,
+            )
+        )
+    canonical = json.dumps(
+        {
+            "scenario": scenario.id,
+            "provider": provider,
+            "source": "baseline_conversation",
+            "memories": [memory.content for memory in memories],
+        },
+        sort_keys=True,
+    )
+    return SeedPlan(
+        path=Path(f"<captured:{scenario.id}>"),
+        api_version="llm-memory-bench.dev/v1",
+        seed_id=f"capture-{scenario.id}",
+        version="1.0.0",
+        provider=provider,
+        mode="declarative",
+        memories=tuple(memories),
         fixture_hash=hashlib.sha256(canonical.encode("utf-8")).hexdigest(),
     )
 
@@ -169,11 +219,15 @@ async def _run_container_trial(
     profile_mode: bool,
     completion_provider,
     memory_tokens: int = 0,
+    initial_memories: list[dict] | None = None,
 ) -> TrialResult:
     result = TrialResult(scenario_id=scenario.id, mode=mode)
+    result.initial_memories = list(initial_memories or [])
     user_sim_system = USER_SIMULATOR_PROMPT.format(
         persona=scenario.persona_prompt,
-        user_facts="\n".join(f"- {memory.fact}" for memory in scenario.memory_bank)
+        user_facts="\n".join(
+            f"- {memory.fact}" for memory in scenario.user_context_memories()
+        )
         or "None provided",
         task_prompt=scenario.task_prompt,
         outcomes="\n".join(
@@ -245,7 +299,11 @@ async def _run_container_trial(
                         validator,
                         completion_provider,
                         memory_facts=(
-                            [memory.fact for memory in scenario.memory_bank]
+                            [
+                                str(memory.get("fact", ""))
+                                for memory in result.initial_memories
+                                if memory.get("fact")
+                            ]
                             if mode != "baseline"
                             else []
                         ),
@@ -358,6 +416,7 @@ async def run_container_value_benchmark(
     run_result = ValueRunResult(config=value_config)
     run_result.metadata = {
         "execution": "container",
+        "memory_setup_mode": value_config.memory_setup_mode,
         "host": {
             "name": container_config.host_name,
             "version": container_config.host_version,
@@ -370,25 +429,110 @@ async def run_container_value_benchmark(
     for scenario in scenarios:
         scenario_result = ScenarioResult(scenario_id=scenario.id)
 
-        baseline_container = start_container(
-            _baseline_config(container_config),
-            profile=None,
-            legacy_install=False,
-        )
-        try:
-            baseline_config = _baseline_config(container_config)
-            scenario_result.trials["baseline"] = await _run_container_trial(
-                scenario,
-                baseline_config,
-                baseline_container,
-                user_provider,
-                "baseline",
-                value_config.max_turns,
-                False,
-                completion_provider,
+        # Seeded mode preserves the historical baseline: Claude has no
+        # integration, while the memory arm receives the scenario fixture.
+        if value_config.memory_setup_mode == "seeded":
+            baseline_container = start_container(
+                _baseline_config(container_config),
+                profile=None,
+                legacy_install=False,
             )
-        finally:
-            stop_container(baseline_container, keep=container_config.keep_container)
+            try:
+                baseline_config = _baseline_config(container_config)
+                scenario_result.trials["baseline"] = await _run_container_trial(
+                    scenario,
+                    baseline_config,
+                    baseline_container,
+                    user_provider,
+                    "baseline",
+                    value_config.max_turns,
+                    False,
+                    completion_provider,
+                    initial_memories=[],
+                )
+            finally:
+                stop_container(baseline_container, keep=container_config.keep_container)
+            seed_plan = _scenario_seed_plan(scenario, profile_provider)
+            memory_source = "scenario_seed"
+        else:
+            # Capture-first mode gives the baseline the real integration, but
+            # starts it in a fresh empty project. The provider's observed
+            # memories become the replay seed for the second arm.
+            capture_project_id = _new_project_id(f"{scenario.id}-capture")
+            capture_workspace = __import__("tempfile").TemporaryDirectory(
+                prefix="llm-bench-value-capture-"
+            )
+            capture_container: str | None = None
+            try:
+                materialize_integration(
+                    container_config,
+                    profile,
+                    capture_workspace.name,
+                    capture_project_id,
+                )
+                capture_container = start_container(
+                    container_config,
+                    profile=profile,
+                    project_id=capture_project_id,
+                )
+                install_integration(capture_container, capture_workspace.name, profile)
+                scenario_result.trials["baseline"] = await _run_container_trial(
+                    scenario,
+                    container_config,
+                    capture_container,
+                    user_provider,
+                    "baseline",
+                    value_config.max_turns,
+                    True,
+                    completion_provider,
+                    initial_memories=[],
+                )
+                captured, retention_calls = query_integration(
+                    capture_container, profile, capture_project_id
+                )
+                scenario_result.trials["baseline"].captured_memories = [
+                    {
+                        "fact": (
+                            item.get("content")
+                            or item.get("text")
+                            or item.get("value")
+                            or item.get("fact")
+                        ),
+                        "category": item.get("category", "captured"),
+                        "source": "baseline_conversation",
+                    }
+                    for item in captured
+                    if isinstance(item, dict)
+                    and (
+                        item.get("content")
+                        or item.get("text")
+                        or item.get("value")
+                        or item.get("fact")
+                    )
+                ]
+                scenario_result.trials["baseline"].captured_memories = list(
+                    {
+                        json.dumps(item, sort_keys=True): item
+                        for item in scenario_result.trials["baseline"].captured_memories
+                    }.values()
+                )
+                scenario_result.trials["baseline"].memory_events = [
+                    {"retention_calls": retention_calls}
+                ] if retention_calls else []
+            finally:
+                if capture_container is not None:
+                    cleanup_integration(capture_container, profile, capture_project_id)
+                    stop_container(
+                        capture_container,
+                        keep=container_config.keep_container,
+                    )
+                capture_workspace.cleanup()
+            seed_plan = _captured_seed_plan(
+                scenario,
+                profile_provider,
+                scenario_result.trials["baseline"].captured_memories,
+            )
+            memory_source = "baseline_capture"
 
         project_id = _new_project_id(scenario.id)
         workspace_tmp = __import__("tempfile").TemporaryDirectory(
@@ -405,7 +549,6 @@ async def run_container_value_benchmark(
                 workspace_tmp.name,
                 project_id,
             )
-            seed_plan = _scenario_seed_plan(scenario, profile_provider)
             try:
                 # The agent runs in Docker, while benchmark seeding runs on
                 # the host. Docker Desktop's host.docker.internal name is not
@@ -414,9 +557,6 @@ async def run_container_value_benchmark(
                     seed_environment["MEMORYHUB_URL"] = seed_environment[
                         "MEMORYHUB_SEED_URL"
                     ]
-                # The seed adapter is synchronous but uses asyncio.run() for
-                # MemoryHub's async client. Run it in a worker thread because
-                # this benchmark function already owns an event loop.
                 seed_result = await asyncio.to_thread(
                     seed_benchmark_data,
                     seed_plan,
@@ -434,14 +574,13 @@ async def run_container_value_benchmark(
             )
             try:
                 install_integration(memory_container, workspace_tmp.name, profile)
-                memory_config = container_config
                 memory_tokens = max(
                     1,
                     sum(len(memory.content) for memory in seed_plan.memories) // 4,
                 )
                 trial = await _run_container_trial(
                     scenario,
-                    memory_config,
+                    container_config,
                     memory_container,
                     user_provider,
                     "memory_integration",
@@ -449,11 +588,20 @@ async def run_container_value_benchmark(
                     True,
                     completion_provider,
                     memory_tokens=memory_tokens,
+                    initial_memories=[
+                        {
+                            "fact": memory.content,
+                            "category": memory.metadata.get("category", "general"),
+                            "source": memory.metadata.get("source", memory_source),
+                        }
+                        for memory in seed_plan.memories
+                    ],
                 )
                 scenario_result.trials["memory_integration"] = trial
                 run_result.metadata["scenarios"][scenario.id] = {
                     "project_id": project_id,
                     "effective_integration_hash": effective_hash,
+                    "memory_source": memory_source,
                     "seed": {
                         "plan": seed_plan.plan_id,
                         "fixture_hash": seed_plan.fixture_hash,

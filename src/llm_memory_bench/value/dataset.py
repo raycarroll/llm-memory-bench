@@ -35,6 +35,13 @@ class ValueScenario(BaseModel):
     outcomes: list[Outcome]
     validators: list[ValidatorSpec] = Field(default_factory=lambda: [ValidatorSpec()])
     noise_memories: list[MemoryEntry] = Field(default_factory=list)
+    # Older datasets use memory_bank for both the user's hidden facts and the
+    # memories seeded into the value arm.  Keep that format compatible while
+    # allowing capture-first experiments to define the user context separately.
+    user_facts: list[MemoryEntry] | None = None
+
+    def user_context_memories(self) -> list[MemoryEntry]:
+        return self.user_facts if self.user_facts is not None else self.memory_bank
 
     def effective_outcomes(self) -> list[Outcome]:
         return self.outcomes

@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+from typing import Literal
+
 from pydantic import BaseModel
 
 
@@ -20,6 +22,7 @@ class RunConfig(BaseModel):
 
 class ValueRunConfig(RunConfig):
     injection_mode: str = "prompt"  # "prompt" | "tool" | "both"
+    memory_setup_mode: Literal["seeded", "capture_first"] = "seeded"
     max_turns: int = 10
     judge_during_run: bool = True
     user_simulator_provider: str = "openai"

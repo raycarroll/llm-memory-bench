@@ -19,7 +19,7 @@ This project uses conversations from [AlpsBench](https://huggingface.co/datasets
 
 - **Containerised** (`bench`, `container-value-run`) — Real agent + real memory system integration testing. Runs Claude Code (or other agents) with actual memory systems installed via MCP inside Docker. The agent makes real tool calls, data is actually stored, and we query what was saved.
 
-**These are orthogonal:** You can run either benchmark (extraction or value) in either mode. The Streamlit UI supports API-level runs and Claude Code container value runs.
+**These are orthogonal:** You can run either benchmark (extraction or value) in either mode. The Streamlit UI presents extraction and value as the experiment families, then selects the applicable runtime. τ²-bench appears as a value scenario source.
 
 | | Extraction Benchmark | Value Benchmark |
 |---|---|---|
@@ -75,6 +75,13 @@ writes UI-launched results to `results/ui/`.
 ```bash
 pip install -e '.[ui]'
 llm-memory-bench-ui
+```
+
+For a pipx-installed launcher, add the optional UI dependency to its existing
+environment:
+
+```bash
+pipx inject llm-memory-bench 'streamlit>=1.40.0'
 ```
 
 See [docs/ui-quickstart.md](docs/ui-quickstart.md).
@@ -281,6 +288,7 @@ llm-memory-bench value-run \
 | `--scenarios` | *(required)* | Path to generated scenarios |
 | `--system` | `simple` | Memory system to use |
 | `--mode` | `prompt` | How memories are injected: `prompt` (in system prompt), `tool` (via recall tool), or `both` |
+| `--memory-setup-mode` | `seeded` | Use declared scenario memories or baseline-captured memories |
 | `--max-turns` | `10` | Max conversation turns per trial |
 | `--user-sim-provider` | same as `--provider` | Provider for the simulated user |
 | `--user-sim-model` | same as `--model` | Model for the simulated user |
@@ -370,6 +378,19 @@ The first profile is Claude Code + remote MemoryHub:
 llm-memory-bench bench configs/claude-memoryhub-remote.yaml
 ```
 
+The MemoryHub container configuration appends the checked-in Claude Code
+memory prompt snapshot from `prompts/claude_code/v1_2026-08.yaml` to the
+runtime's Claude Code preset. Container configs can control this with:
+
+```yaml
+container:
+  system_prompt_file: prompts/claude_code/v1_2026-08.yaml
+  system_prompt_mode: append  # or replace
+```
+
+`append` preserves Claude Code's normal runtime prompt and adds the benchmark
+prompt. `replace` uses only the supplied prompt text.
+
 For a real integrated value run, use a value scenario file and the container
 configuration. This runs a baseline Claude Code trial and a separate trial
 with scenario memories seeded into MemoryHub before the agent starts:
@@ -383,8 +404,27 @@ llm-memory-bench container-value-run \
   --judge-provider openai
 ```
 
+All value runtimes support two memory setup modes:
+
+- `seeded`: the baseline starts without memories and the memory arm receives
+  the scenario's declared memory bank.
+- `capture_first`: the baseline starts cold with memory-writing enabled; its
+  captured writes are handed to the memory arm.
+
+The user simulator still receives scenario/task context in both modes. That
+context is not automatically treated as agent memory.
+
 The existing `value-run` command remains API-level and uses simulated memory
 adapters. It is not equivalent to `container-value-run`.
+
+For faithful τ² Value experiments, use `tau2-value-run`. It calls the real τ²
+Python runner for the domain environment, user simulation, tools, and reward,
+then adds matched baseline/memory arms and harness telemetry. See
+[docs/tau2-value.md](docs/tau2-value.md).
+
+For a self-contained setup without a local τ² Python environment, use
+`tau2-container-run`. It builds a pinned Python/τ² image on first use and
+passes only the model credentials through from the host.
 
 ```yaml
 host:
