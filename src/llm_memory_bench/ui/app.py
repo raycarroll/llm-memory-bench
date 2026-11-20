@@ -359,10 +359,11 @@ def render_app() -> None:
             st.caption("Controls for the **Run benchmark** tab")
             family = st.radio(
                 "Experiment",
-                ["value", "extraction"],
+                ["value", "extraction", "demo"],
                 format_func=lambda item: {
                     "value": "Value",
                     "extraction": "Extraction",
+                    "demo": "OpenShift demo",
                 }[item],
             )
             kind = family
@@ -410,6 +411,7 @@ def render_app() -> None:
             } else "api"
 
             dataset_path = ""
+            demo_config_path = None
             goal_id = None
             goal_dataset = None
             tau2_domain = None
@@ -506,10 +508,11 @@ def render_app() -> None:
                         task_options = []
                         st.warning(f"Task definitions unavailable: {exc}")
                 else:
-                    dataset_path = st.text_input(
-                        "Dataset path",
-                        value="datasets/test/alpsbench-task1.yaml",
+                    demo_config_path = st.text_input(
+                        "Demo configuration",
+                        value="scenarios/openshift/network-policy.yaml",
                     )
+                    dataset_path = demo_config_path
             container_config_path = None
             if execution == "container" and kind in {"value", "extraction"}:
                 with st.expander("Container", expanded=False):
@@ -653,6 +656,13 @@ def render_app() -> None:
                         "Set OPENAI_API_KEY (or the provider key required by the selected model) "
                         "in the environment running Streamlit."
                     )
+            elif kind == "demo":
+                with st.expander("Demo model & memory", expanded=True):
+                    provider = st.selectbox("Provider", ["openai", "anthropic", "litellm", "vertex"])
+                    model = st.text_input("Model", value="gpt-4o")
+                    system = st.selectbox("Memory system", ["memoryhub"])
+                    mode = st.selectbox("Memory mode", ["both"])
+                st.info("The demo runs paired memory and baseline agents against isolated OpenShift namespaces.")
                 provider = "openai"
                 model = tau2_agent_model
                 system = tau2_memory_system
@@ -665,7 +675,7 @@ def render_app() -> None:
                         model = st.text_input("Model", value="gpt-4o")
                         system = st.selectbox("Memory integration", list_systems())
             with st.expander("Limits & evaluation", expanded=False):
-                max_turns = st.number_input("Max turns", min_value=1, value=10, disabled=kind != "value")
+                max_turns = st.number_input("Max turns", min_value=1, value=10, disabled=kind not in {"value", "demo"})
                 max_scenarios = st.number_input(
                     "Max scenarios (0 = all)", min_value=0, value=1, disabled=kind != "value"
                 )
@@ -684,6 +694,7 @@ def render_app() -> None:
         execution=execution,
         dataset_path=dataset_path,
         container_config_path=container_config_path,
+        demo_config_path=demo_config_path,
         goal_id=goal_id,
         provider=provider,
         model=model,
@@ -783,12 +794,59 @@ def render_app() -> None:
         run_kind = payload.get("spec", {}).get("kind", spec.kind)
         if run_kind == "tau2":
             render_tau2_result(st, result)
+        elif run_kind == "demo":
+            render_demo_result(st, result)
         elif run_kind == "value":
             render_value_result(st, result, payload.get("spec", {}))
         else:
             render_extraction_result(st, result)
     else:
         st.info("Run a benchmark to display the baseline-versus-memory comparison here.")
+
+
+def render_demo_result(st, result: dict) -> None:
+    """Render paired demo execution separately from benchmark evaluations."""
+    demo = result.get("demo", {})
+    if not demo:
+        st.info("No demo result was produced.")
+        return
+    st.caption(
+        f"{demo.get('demo_id', 'demo')} · {demo.get('provider', 'unknown')} · "
+        f"{demo.get('model', 'unknown')}"
+    )
+    reset = demo.get("fixture_reset") or {}
+    if reset.get("status") == "unavailable":
+        st.warning(f"Fixture reset unavailable: {reset.get('error', 'unknown error')}")
+    elif reset and not reset.get("passed"):
+        st.error(f"Fixture reset failed: {reset.get('error', 'unknown error')}")
+    columns = st.columns(2)
+    for column, side in zip(columns, ("memory", "baseline")):
+        with column:
+            payload = demo.get("sides", {}).get(side)
+            st.markdown(f"### {'With Memory' if side == 'memory' else 'Baseline'}")
+            if not payload:
+                st.error("No side result")
+                continue
+            st.metric("Agent status", payload.get("status", "unknown"))
+            st.caption(
+                f"Namespace: {payload.get('namespace', 'unknown')} · "
+                f"Turns: {payload.get('turns', 0)} · "
+                f"Tool calls: {len(payload.get('tool_calls', []))}"
+            )
+            verification = payload.get("verification") or {}
+            if verification.get("status") == "passed":
+                st.success("Independent verification: PASS")
+            elif verification.get("status") == "unavailable":
+                st.warning(f"Verification unavailable: {verification.get('error', 'unknown error')}")
+            else:
+                st.error("Independent verification: NOT VERIFIED")
+            if payload.get("error"):
+                st.error(payload["error"])
+            with st.expander("Verification evidence", expanded=False):
+                st.json(verification.get("evidence", {}))
+            with st.expander("Agent output and tool trace", expanded=False):
+                st.markdown(payload.get("content", ""))
+                st.json(payload.get("tool_calls", []))
 
 
 def render_tau2_result(st, result: dict) -> None:
