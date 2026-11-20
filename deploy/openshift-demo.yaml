@@ -1,0 +1,83 @@
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: llm-memory-bench-demo-config
+  namespace: llm-memory-bench
+data:
+  MEMORYHUB_MCP_URL: https://memory-hub-mcp-memory-hub-mcp.apps.cluster-2jj9c.dyn.redhatworkshops.io/mcp/
+  K8S_MEMORY_MCP_URL: https://demo-memory-mcp-kubernetes-mcp-server.apps.cluster-2jj9c.dyn.redhatworkshops.io/mcp
+  K8S_BASELINE_MCP_URL: https://demo-baseline-mcp-kubernetes-mcp-server.apps.cluster-2jj9c.dyn.redhatworkshops.io/mcp
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: llm-memory-bench
+  namespace: llm-memory-bench
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: llm-memory-bench
+  template:
+    metadata:
+      labels:
+        app: llm-memory-bench
+    spec:
+      containers:
+        - name: ui
+          # Build this image locally, tag it as :local, and push it to the
+          # OpenShift internal registry before applying this manifest.
+          image: quay.io/rh_et_wd/llm-bench:local
+          imagePullPolicy: Always
+          ports:
+            - name: http
+              containerPort: 8501
+          envFrom:
+            - configMapRef:
+                name: llm-memory-bench-demo-config
+          env:
+            - name: MEMORYHUB_API_KEY
+              valueFrom:
+                secretKeyRef:
+                  name: memoryhub-demo-credentials
+                  key: api-key
+          readinessProbe:
+            httpGet:
+              path: /_stcore/health
+              port: http
+            initialDelaySeconds: 10
+            periodSeconds: 10
+          resources:
+            requests:
+              cpu: 250m
+              memory: 512Mi
+            limits:
+              cpu: "2"
+              memory: 2Gi
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: llm-memory-bench
+  namespace: llm-memory-bench
+spec:
+  selector:
+    app: llm-memory-bench
+  ports:
+    - name: http
+      port: 8501
+      targetPort: http
+---
+apiVersion: route.openshift.io/v1
+kind: Route
+metadata:
+  name: llm-memory-bench
+  namespace: llm-memory-bench
+spec:
+  to:
+    kind: Service
+    name: llm-memory-bench
+  port:
+    targetPort: http
+  tls:
+    termination: edge

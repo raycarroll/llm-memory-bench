@@ -1,0 +1,183 @@
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: demo-memory-mcp
+  namespace: kubernetes-mcp-server
+---
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: demo-baseline-mcp
+  namespace: kubernetes-mcp-server
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata: {name: demo-memory-mcp, namespace: memory-demo-memory}
+rules:
+  - apiGroups: [""]
+    resources: [pods, pods/log, events, services, endpoints]
+    verbs: [get, list]
+  - apiGroups: [discovery.k8s.io]
+    resources: [endpointslices]
+    verbs: [get, list]
+  - apiGroups: [apps]
+    resources: [deployments]
+    verbs: [get, list]
+  - apiGroups: [networking.k8s.io]
+    resources: [networkpolicies]
+    verbs: [get, list]
+  - apiGroups: [networking.k8s.io]
+    resources: [networkpolicies]
+    resourceNames: [dependency-ingress, frontend-egress]
+    verbs: [patch]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata: {name: demo-memory-mcp, namespace: memory-demo-memory}
+subjects:
+  - kind: ServiceAccount
+    name: demo-memory-mcp
+    namespace: kubernetes-mcp-server
+roleRef: {apiGroup: rbac.authorization.k8s.io, kind: Role, name: demo-memory-mcp}
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata: {name: demo-baseline-mcp, namespace: memory-demo-baseline}
+rules:
+  - apiGroups: [""]
+    resources: [pods, pods/log, events, services, endpoints]
+    verbs: [get, list]
+  - apiGroups: [discovery.k8s.io]
+    resources: [endpointslices]
+    verbs: [get, list]
+  - apiGroups: [apps]
+    resources: [deployments]
+    verbs: [get, list]
+  - apiGroups: [networking.k8s.io]
+    resources: [networkpolicies]
+    verbs: [get, list]
+  - apiGroups: [networking.k8s.io]
+    resources: [networkpolicies]
+    resourceNames: [dependency-ingress, frontend-egress]
+    verbs: [patch]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata: {name: demo-baseline-mcp, namespace: memory-demo-baseline}
+subjects:
+  - kind: ServiceAccount
+    name: demo-baseline-mcp
+    namespace: kubernetes-mcp-server
+roleRef: {apiGroup: rbac.authorization.k8s.io, kind: Role, name: demo-baseline-mcp}
+---
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: demo-memory-mcp-config
+  namespace: kubernetes-mcp-server
+data:
+  config.toml: |
+    port = "8081"
+    bind_address = "0.0.0.0"
+    read_only = false
+    toolsets = ["core"]
+    server_instructions = "Troubleshoot only the configured NetworkPolicy scenario. Use only namespace memory-demo-memory, inspect first, and patch only dependency-ingress and frontend-egress."
+---
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: demo-baseline-mcp-config
+  namespace: kubernetes-mcp-server
+data:
+  config.toml: |
+    port = "8082"
+    bind_address = "0.0.0.0"
+    read_only = false
+    toolsets = ["core"]
+    server_instructions = "Troubleshoot only the configured NetworkPolicy scenario. Use only namespace memory-demo-baseline, inspect first, and patch only dependency-ingress and frontend-egress."
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: demo-memory-mcp
+  namespace: kubernetes-mcp-server
+spec:
+  replicas: 1
+  selector:
+    matchLabels: {app: demo-memory-mcp}
+  template:
+    metadata:
+      labels: {app: demo-memory-mcp}
+    spec:
+      serviceAccountName: demo-memory-mcp
+      containers:
+        - name: server
+          image: quay.io/containers/kubernetes_mcp_server:v0.1.3
+          args: ["--config", "/etc/mcp/config.toml"]
+          ports: [{name: http, containerPort: 8081}]
+          volumeMounts: [{name: config, mountPath: /etc/mcp}]
+          readinessProbe: {httpGet: {path: /healthz, port: http}}
+          livenessProbe: {httpGet: {path: /healthz, port: http}}
+      volumes: [{name: config, configMap: {name: demo-memory-mcp-config}}]
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: demo-baseline-mcp
+  namespace: kubernetes-mcp-server
+spec:
+  replicas: 1
+  selector:
+    matchLabels: {app: demo-baseline-mcp}
+  template:
+    metadata:
+      labels: {app: demo-baseline-mcp}
+    spec:
+      serviceAccountName: demo-baseline-mcp
+      containers:
+        - name: server
+          image: quay.io/containers/kubernetes_mcp_server:v0.1.3
+          args: ["--config", "/etc/mcp/config.toml"]
+          ports: [{name: http, containerPort: 8082}]
+          volumeMounts: [{name: config, mountPath: /etc/mcp}]
+          readinessProbe: {httpGet: {path: /healthz, port: http}}
+          livenessProbe: {httpGet: {path: /healthz, port: http}}
+      volumes: [{name: config, configMap: {name: demo-baseline-mcp-config}}]
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: demo-memory-mcp
+  namespace: kubernetes-mcp-server
+spec:
+  selector: {app: demo-memory-mcp}
+  ports: [{name: http, port: 8081, targetPort: http}]
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: demo-baseline-mcp
+  namespace: kubernetes-mcp-server
+spec:
+  selector: {app: demo-baseline-mcp}
+  ports: [{name: http, port: 8082, targetPort: http}]
+---
+apiVersion: route.openshift.io/v1
+kind: Route
+metadata:
+  name: demo-memory-mcp
+  namespace: kubernetes-mcp-server
+spec:
+  to: {kind: Service, name: demo-memory-mcp}
+  port: {targetPort: http}
+  tls: {termination: edge}
+---
+apiVersion: route.openshift.io/v1
+kind: Route
+metadata:
+  name: demo-baseline-mcp
+  namespace: kubernetes-mcp-server
+spec:
+  to: {kind: Service, name: demo-baseline-mcp}
+  port: {targetPort: http}
+  tls: {termination: edge}
