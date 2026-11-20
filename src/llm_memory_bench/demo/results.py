@@ -65,7 +65,7 @@ class DemoRunResult(BaseModel):
 
     def independent_passed(self) -> bool:
         """Return true only when both sides independently pass verification."""
-        return all(
+        return set(self.sides) == {"memory", "baseline"} and all(
             side.verification is not None and side.verification.passed
             for side in self.sides.values()
         )

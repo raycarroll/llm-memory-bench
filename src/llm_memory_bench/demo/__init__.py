@@ -5,6 +5,7 @@ from .config import load_demo_spec
 from .runtime import DemoToolRuntime, MEMORYHUB_SEARCH_NAME
 from .agent import DemoAgent, DemoAgentResult, DemoToolCall
 from .verification import OpenShiftVerifier
+from .driver import run_demo
 from .specs import DemoLimits, DemoSideSpec, DemoSpec
 
 __all__ = [
@@ -21,4 +22,5 @@ __all__ = [
     "DemoAgentResult",
     "DemoToolCall",
     "OpenShiftVerifier",
+    "run_demo",
 ]

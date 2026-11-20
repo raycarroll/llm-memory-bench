@@ -15,10 +15,11 @@ class RunSpec(BaseModel):
     and a future EvalHub adapter can all submit the same specification.
     """
 
-    kind: Literal["value", "tau2", "extraction"] = "value"
+    kind: Literal["value", "tau2", "extraction", "demo"] = "value"
     execution: Literal["api", "container"] = "api"
     dataset_path: str
     container_config_path: str | None = None
+    demo_config_path: str | None = None
     goal_id: str | None = None
     provider: str = "openai"
     model: str = "gpt-4o"

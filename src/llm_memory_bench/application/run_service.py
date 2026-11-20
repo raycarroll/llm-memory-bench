@@ -12,6 +12,7 @@ from pydantic import BaseModel
 
 from .evaluation_service import EvaluationService
 from .experiments import (
+    DemoExperiment,
     ExtractionExperiment,
     Tau2Experiment,
     ValueExperiment,
@@ -42,6 +43,7 @@ class RunService:
     def __init__(self, results_dir: Path | str = "results/ui"):
         self.results_dir = Path(results_dir)
         self.extraction = ExtractionExperiment()
+        self.demo = DemoExperiment()
         self.value = ValueExperiment()
         self.tau2 = Tau2Experiment(self.results_dir)
         self.evaluation = EvaluationService(self.results_dir)
@@ -50,6 +52,8 @@ class RunService:
         run_id = self._run_id(spec)
         if spec.kind == "extraction":
             output = await self.extraction.run(spec, run_id)
+        elif spec.kind == "demo":
+            output = await self.demo.run(spec, run_id)
         elif spec.kind == "value":
             output = await self.value.run(spec, run_id)
         elif spec.kind == "tau2":
@@ -98,6 +102,7 @@ class RunService:
             f"model={spec.get('model', '')}",
             f"system={spec.get('system', '')}",
             f"dataset={spec.get('dataset_path', '')}",
+            f"demo_config={spec.get('demo_config_path', '')}",
         ]
         if result.get("run", {}).get("scenario_results") is not None:
             lines.append(

@@ -18,6 +18,8 @@ from ..value.dataset import load_value_dataset
 from ..value.tau2 import load_tau2_memory_plan, run_tau2_value_benchmark
 from .evaluators import Evaluator, ExtractionEvaluator, ValueEvaluator
 from .specs import RunSpec
+from ..demo import load_demo_spec
+from ..demo.driver import run_demo
 
 
 @dataclass
@@ -35,6 +37,24 @@ class Experiment(Protocol):
 
     async def run(self, spec: RunSpec, run_id: str) -> ExperimentOutput:
         """Execute one experiment described by ``spec``."""
+
+
+class DemoExperiment:
+    kind = "demo"
+
+    async def run(self, spec: RunSpec, run_id: str) -> ExperimentOutput:
+        if not spec.demo_config_path:
+            raise ValueError("demo_config_path is required for demo runs")
+        demo = load_demo_spec(spec.demo_config_path)
+        result = await run_demo(
+            demo,
+            provider_name=spec.provider,
+            model=spec.model,
+            memory_system=spec.system,
+            memory_mode=spec.mode,
+            api_key_env=spec.api_key_env,
+        )
+        return ExperimentOutput({"demo": result})
 
 
 class ExtractionExperiment:
