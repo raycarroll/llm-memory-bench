@@ -40,6 +40,8 @@ class AnthropicProvider(LLMProvider):
         messages: list[dict],
         tools: list[dict],
         system: str,
+        tool_choice: str | None = None,
+        disable_parallel_tool_calls: bool = False,
     ) -> ProviderResponse:
         try:
             kwargs = dict(
@@ -51,6 +53,12 @@ class AnthropicProvider(LLMProvider):
             )
             if tools:
                 kwargs["tools"] = self._to_anthropic_tools(tools)
+                if tool_choice:
+                    kwargs["tool_choice"] = {"type": "tool", "name": tool_choice}
+                elif disable_parallel_tool_calls:
+                    kwargs["tool_choice"] = {"type": "auto"}
+                if disable_parallel_tool_calls:
+                    kwargs["tool_choice"]["disable_parallel_tool_use"] = True
             response = await self.client.messages.create(**kwargs)
         except Exception as e:
             raise ProviderError(self._friendly_error(e)) from e

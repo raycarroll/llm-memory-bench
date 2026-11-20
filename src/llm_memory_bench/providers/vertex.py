@@ -69,6 +69,8 @@ class VertexProvider(LLMProvider):
         messages: list[dict],
         tools: list[dict],
         system: str,
+        tool_choice: str | None = None,
+        disable_parallel_tool_calls: bool = False,
     ) -> ProviderResponse:
         try:
             kwargs = dict(
