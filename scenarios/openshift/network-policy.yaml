@@ -1,0 +1,155 @@
+demo_id: network-policy@1.0.0
+demo_version: 1.0.0
+prompt: >-
+  Troubleshoot the frontend in your assigned demo namespace, restore healthy
+  operation, and report the evidence and verification result.
+system_prompt: >-
+  You are an SRE troubleshooting an unhealthy OpenShift demo workload. Gather
+  and correlate live evidence before changing anything. Make only the smallest
+  justified change in your assigned namespace, preserve DNS access, and verify
+  recovery with live resource state and functional evidence.
+memoryhub_project_id: openshift-networkpolicy-demo
+memoryhub:
+  type: mcp
+  transport: streamable_http
+  endpoint_env: MEMORYHUB_MCP_URL
+  api_key_env: MEMORYHUB_API_KEY
+  action_tool: memory
+  search_action: search
+  max_results: 5
+sides:
+  memory:
+    namespace: memory-demo-memory
+    kubernetes_endpoint_env: K8S_MEMORY_MCP_URL
+    kubernetes_tools:
+      - pods_list_in_namespace
+      - pods_get
+      - pods_log
+      - events_list
+      - resources_list
+      - resources_get
+      - resources_create_or_update
+    memoryhub_tools:
+      - memoryhub_search
+  baseline:
+    namespace: memory-demo-baseline
+    kubernetes_endpoint_env: K8S_BASELINE_MCP_URL
+    kubernetes_tools:
+      - pods_list_in_namespace
+      - pods_get
+      - pods_log
+      - events_list
+      - resources_list
+      - resources_get
+      - resources_create_or_update
+    memoryhub_tools: []
+read_only_tools:
+  - pods_list_in_namespace
+  - pods_get
+  - pods_log
+  - events_list
+  - resources_list
+  - resources_get
+change_making_tools:
+  - resources_create_or_update
+change_resources:
+  - networkpolicy/dependency-ingress
+  - networkpolicy/frontend-egress
+memory_search_required_before_change: true
+limits:
+  max_turns: 30
+  max_tool_calls: 36
+  timeout_seconds: 300
+  tool_timeout_seconds: 45
+fixture:
+  resources:
+    - resource: networkpolicy/dependency-ingress
+      patch_type: merge
+      patch:
+        spec:
+          podSelector:
+            matchLabels: {app: dependency}
+          policyTypes: [Ingress]
+          ingress:
+            - from:
+                - podSelector:
+                    matchLabels: {app: frontend-v1}
+              ports:
+                - {protocol: TCP, port: 8080}
+          egress: null
+    - resource: networkpolicy/frontend-egress
+      patch_type: merge
+      patch:
+        spec:
+          podSelector:
+            matchLabels: {app: frontend}
+          policyTypes: [Egress]
+          ingress: null
+          egress:
+            - to:
+                - namespaceSelector:
+                    matchLabels:
+                      kubernetes.io/metadata.name: openshift-dns
+                  podSelector:
+                    matchLabels:
+                      dns.operator.openshift.io/daemonset-dns: default
+              ports:
+                - {protocol: UDP, port: 5353}
+                - {protocol: TCP, port: 5353}
+verification:
+  frontend_pod_selector: app=frontend
+  dependency_pod_selector: app=dependency
+  frontend_container: frontend
+  dependency_container: dependency
+  service: dependency
+  ingress_policy: dependency-ingress
+  egress_policy: frontend-egress
+  dependency_port: 8080
+  dependency_protocol: TCP
+  dns_resolved_log_marker: "DNS resolved dependency to"
+  dependency_success_log_prefix: "Dependency check succeeded:"
+  dependency_log_prefixes:
+    - "Dependency check succeeded:"
+    - "Dependency connection failed:"
+    - "Dependency DNS lookup failed:"
+  dns_rule:
+    to:
+      - namespaceSelector:
+          matchLabels:
+            kubernetes.io/metadata.name: openshift-dns
+        podSelector:
+          matchLabels:
+            dns.operator.openshift.io/daemonset-dns: default
+    ports:
+      - {protocol: UDP, port: 5353}
+      - {protocol: TCP, port: 5353}
+  expected_ingress_policy_spec:
+    podSelector:
+      matchLabels: {app: dependency}
+    policyTypes: [Ingress]
+    ingress:
+      - from:
+          - podSelector:
+              matchLabels: {app: frontend}
+        ports:
+          - {protocol: TCP, port: 8080}
+  expected_egress_policy_spec:
+    podSelector:
+      matchLabels: {app: frontend}
+    policyTypes: [Egress]
+    egress:
+      - to:
+          - namespaceSelector:
+              matchLabels:
+                kubernetes.io/metadata.name: openshift-dns
+            podSelector:
+              matchLabels:
+                dns.operator.openshift.io/daemonset-dns: default
+        ports:
+          - {protocol: UDP, port: 5353}
+          - {protocol: TCP, port: 5353}
+      - to:
+          - podSelector:
+              matchLabels: {app: dependency}
+        ports:
+          - {protocol: TCP, port: 8080}

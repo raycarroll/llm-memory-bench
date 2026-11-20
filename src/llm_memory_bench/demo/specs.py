@@ -48,6 +48,7 @@ class DemoSpec(BaseModel):
     prompt: str = Field(min_length=1)
     system_prompt: str = ""
     memoryhub_project_id: str | None = None
+    memoryhub: dict[str, Any] = Field(default_factory=dict)
     sides: dict[str, DemoSideSpec]
     read_only_tools: list[str] = Field(min_length=1)
     change_making_tools: list[str] = Field(min_length=1)
@@ -55,6 +56,7 @@ class DemoSpec(BaseModel):
     limits: DemoLimits = Field(default_factory=DemoLimits)
     fixture: dict[str, Any] = Field(default_factory=dict)
     verification: dict[str, Any] = Field(default_factory=dict)
+    memory_search_required_before_change: bool = False
 
     @field_validator("read_only_tools", "change_making_tools", "change_resources")
     @classmethod
