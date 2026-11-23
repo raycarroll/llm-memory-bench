@@ -47,12 +47,14 @@ class DemoAgent:
         spec: DemoSpec,
         memoryhub_api_key: str | None = None,
         on_event: Callable[[dict[str, Any]], None] | None = None,
+        verification_callback: Callable[[], Any] | None = None,
     ):
         self.side = side
         self.provider = provider
         self.spec = spec
         self.on_event = on_event
         self.memoryhub_api_key = memoryhub_api_key
+        self.verification_callback = verification_callback
 
     async def run(self) -> DemoAgentResult:
         result = DemoAgentResult(
@@ -67,12 +69,18 @@ class DemoAgent:
         read_only_calls = 0
 
         try:
+            self._emit("prompt", content=self.spec.prompt)
             async with DemoToolRuntime(
                 side=self.side,
                 spec=self.spec,
                 memoryhub_api_key=self.memoryhub_api_key,
                 timeout_seconds=self.spec.limits.tool_timeout_seconds,
             ) as runtime:
+                developer_context = (
+                    f"You are operating only in namespace {runtime.namespace}. "
+                    "Pass that namespace to namespaced tools. The MCP server's RBAC "
+                    "is the cluster access boundary."
+                )
                 for turn in range(1, self.spec.limits.max_turns + 1):
                     remaining = deadline - time.monotonic()
                     if remaining <= 0:
@@ -83,10 +91,13 @@ class DemoAgent:
                     tools = [self._provider_tool(tool) for tool in runtime.tools_for_turn()]
                     response = await asyncio.wait_for(
                         self.provider.generate(
-                            messages=messages,
+                            messages=[
+                                {"role": "developer", "content": developer_context},
+                                *messages,
+                            ],
                             tools=tools,
                             system=self.spec.system_prompt,
-                            tool_choice=MEMORYHUB_SEARCH_NAME if force_memory_search else None,
+                            tool_choice=MEMORYHUB_SEARCH_NAME if force_memory_search else "auto",
                             disable_parallel_tool_calls=True,
                         ),
                         timeout=remaining,
@@ -103,11 +114,26 @@ class DemoAgent:
                         if runtime._requires_memory_search and not runtime.memory_search_completed:
                             messages.append({"role": "assistant", "content": response.text})
                             messages.append({
-                                "role": "user",
+                                "role": "developer",
                                 "content": "Search MemoryHub before finalizing, using the live symptoms observed.",
                             })
                             force_memory_search = True
                             continue
+                        if self.verification_callback is not None:
+                            verification = await self.verification_callback()
+                            self._emit("verification", check=verification)
+                            if not verification.get("passed", False):
+                                messages.append({"role": "assistant", "content": response.text})
+                                messages.append({
+                                    "role": "user",
+                                    "content": (
+                                        "Independent verification has not passed. Continue investigating and repairing "
+                                        "the live workload. Verification evidence: "
+                                        + json.dumps(verification, default=str)
+                                    ),
+                                })
+                                force_memory_search = False
+                                continue
                         result.content = response.text
                         result.status = "completed"
                         break
@@ -149,8 +175,12 @@ class DemoAgent:
                     messages.extend(self._tool_result_messages(response, tool_results))
                     if runtime._requires_memory_search and read_only_calls and not runtime.memory_search_completed:
                         messages.append({
-                            "role": "user",
-                            "content": "You inspected the workload. Search MemoryHub now before any Kubernetes change.",
+                            "role": "developer",
+                            "content": (
+                                "You have inspected the live workload. Search MemoryHub "
+                                "now with a concise query based on the observed symptoms "
+                                "before considering any Kubernetes change."
+                            ),
                         })
                         force_memory_search = True
                     else:
@@ -162,6 +192,7 @@ class DemoAgent:
             if result.status != "timed_out":
                 result.status = "failed"
             self._emit("run_error", error=result.error)
+        result.elapsed_seconds = round(time.monotonic() - started, 3)
         return result
 
     @staticmethod

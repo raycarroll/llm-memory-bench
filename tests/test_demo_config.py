@@ -12,8 +12,8 @@ def test_network_policy_demo_config_loads():
     spec = load_demo_spec(CONFIG)
 
     assert spec.demo_id == "network-policy@1.0.0"
-    assert spec.sides["memory"].namespace == "memory-demo-memory"
-    assert spec.sides["baseline"].namespace == "memory-demo-baseline"
+    assert spec.sides["memory"].namespace == "demo-memory"
+    assert spec.sides["baseline"].namespace == "demo-baseline"
     assert spec.memory_search_required_before_change is True
     assert spec.verification["dependency_port"] == 8080
 

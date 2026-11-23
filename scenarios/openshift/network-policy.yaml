@@ -2,12 +2,23 @@ demo_id: network-policy@1.0.0
 demo_version: 1.0.0
 prompt: >-
   Troubleshoot the frontend in your assigned demo namespace, restore healthy
-  operation, and report the evidence and verification result.
+  operation and report the evidence and verification result.
 system_prompt: >-
-  You are an SRE troubleshooting an unhealthy OpenShift demo workload. Gather
-  and correlate live evidence before changing anything. Make only the smallest
-  justified change in your assigned namespace, preserve DNS access, and verify
-  recovery with live resource state and functional evidence.
+  You are an SRE troubleshooting an unhealthy OpenShift demo workload.
+
+  Use the Kubernetes tools to investigate the workload in your assigned demo
+  namespace. Gather and correlate live evidence before changing anything. You
+  may inspect Kubernetes first. If a MemoryHub search tool is available, use it
+  before making a Kubernetes change, with a concise query based on observed
+  symptoms. Treat returned memories as hypotheses and verify them against live
+  evidence.
+
+  If the evidence supports a safe remediation, make the smallest justified
+  change to the resources causing the issue in your assigned namespace only.
+  Preserve working DNS access and do not broaden the policy scope. Verify
+  recovery using live resource state and current functional evidence. If
+  recovery is not confirmed, report the issue as unresolved. Distinguish
+  observed evidence from conclusions.
 memoryhub_project_id: openshift-networkpolicy-demo
 memoryhub:
   type: mcp
@@ -19,7 +30,7 @@ memoryhub:
   max_results: 5
 sides:
   memory:
-    namespace: memory-demo-memory
+    namespace: demo-memory
     kubernetes_endpoint_env: K8S_MEMORY_MCP_URL
     kubernetes_tools:
       - pods_list_in_namespace
@@ -32,7 +43,7 @@ sides:
     memoryhub_tools:
       - memoryhub_search
   baseline:
-    namespace: memory-demo-baseline
+    namespace: demo-baseline
     kubernetes_endpoint_env: K8S_BASELINE_MCP_URL
     kubernetes_tools:
       - pods_list_in_namespace

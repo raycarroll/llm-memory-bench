@@ -43,19 +43,43 @@ class OpenShiftVerifier:
             for address in subset.get("addresses", [])
             if address.get("ip")
         ]
-        ingress_rules = ingress.get("spec", {}).get("ingress", [])
-        egress_rules = egress.get("spec", {}).get("egress", [])
+        ingress_spec = ingress.get("spec", {})
+        egress_spec = egress.get("spec", {})
+        ingress_rules = ingress_spec.get("ingress", [])
+        egress_rules = egress_spec.get("egress", [])
         port = config["dependency_port"]
         protocol = config.get("dependency_protocol", "TCP")
-        ingress_allows_frontend = any(
-            self._selector_matches(source.get("podSelector", {}), frontend_labels)
-            and any(p.get("protocol", "TCP") == protocol and p.get("port") == port for p in rule.get("ports", []))
-            for rule in ingress_rules
-            for source in rule.get("from", [])
+        ingress_allows_frontend = False
+        ingress_allows_port = False
+        for rule in ingress_rules:
+            ports = rule.get("ports")
+            port_matches = not ports or any(
+                item.get("protocol", "TCP") == protocol
+                and item.get("port") in {port, str(port)}
+                for item in ports
+            )
+            for source in rule.get("from", []):
+                selector = source.get("podSelector")
+                if selector is not None and self._selector_matches(selector, frontend_labels):
+                    ingress_allows_frontend = True
+                    ingress_allows_port = ingress_allows_port or port_matches
+        expected_ingress = config["expected_ingress_policy_spec"]
+        expected_egress = config["expected_egress_policy_spec"]
+        broken_specs = {
+            item["resource"].split("/", 1)[1]: item["patch"].get("spec", {})
+            for item in self.spec.fixture.get("resources", [])
+        }
+        ingress_count = int(self._same_policy_spec(ingress_spec, expected_ingress))
+        dns_count = sum(self._same_policy_spec(rule, config["dns_rule"]) for rule in egress_rules)
+        dependency_rule = expected_egress["egress"][-1]
+        dependency_count = sum(self._same_policy_spec(rule, dependency_rule) for rule in egress_rules)
+        ingress_narrow = bool(ingress_count)
+        egress_narrow = bool(
+            self._same_policy_spec(egress_spec, expected_egress)
+            and dns_count == 1
+            and dependency_count == 1
+            and len(egress_rules) == 2
         )
-        dns_count = sum(self._same(rule, config["dns_rule"]) for rule in egress_rules)
-        dependency_rule = {"to": [{"podSelector": {"matchLabels": {"app": "dependency"}}}], "ports": [{"protocol": protocol, "port": port}]}
-        dependency_count = sum(self._same(rule, dependency_rule) for rule in egress_rules)
 
         latest_log = ""
         if include_logs and frontend.get("metadata", {}).get("name"):
@@ -69,7 +93,10 @@ class OpenShiftVerifier:
             if line.startswith(tuple(config.get("dependency_log_prefixes", [])))
         ]
         latest_check = log_lines[-1] if log_lines else ""
-        dns_resolved = bool(config["dns_resolved_log_marker"] in latest_check)
+        dns_resolved = bool(
+            latest_check.startswith(config["dependency_success_log_prefix"])
+            or config["dns_resolved_log_marker"] in latest_check
+        )
         succeeded = latest_check.startswith(config["dependency_success_log_prefix"])
         frontend_ready = self._ready(frontend)
         dependency_ready = self._ready(dependency)
@@ -82,9 +109,14 @@ class OpenShiftVerifier:
             "service_has_dependency_endpoint": bool(dependency_ip and dependency_ip in endpoints),
             "policy_selects_dependency": self._selector_matches(ingress.get("spec", {}).get("podSelector", {}), dependency_labels),
             "policy_allows_client": ingress_allows_frontend,
+            "policy_allows_dependency_port": ingress_allows_port,
+            "policy_is_narrow": ingress_narrow,
             "egress_policy_selects_frontend": self._selector_matches(egress.get("spec", {}).get("podSelector", {}), frontend_labels),
             "egress_policy_allows_dns": dns_count == 1,
             "egress_policy_allows_dependency_port": dependency_count == 1,
+            "egress_policy_is_narrow": egress_narrow,
+            "ingress_policy_matches_fixture": self._same_policy_spec(ingress_spec, broken_specs.get(config["ingress_policy"], {})),
+            "egress_policy_matches_fixture": self._same_policy_spec(egress_spec, broken_specs.get(config["egress_policy"], {})),
             "dns_resolved": dns_resolved,
             "dependency_check_succeeded": succeeded,
             "latest_dependency_log": latest_check,
@@ -92,8 +124,9 @@ class OpenShiftVerifier:
         passed = all([
             evidence["frontend_ready"], evidence["dependency_ready"],
             evidence["service_has_dependency_endpoint"], evidence["policy_selects_dependency"],
-            evidence["policy_allows_client"], evidence["egress_policy_selects_frontend"],
-            evidence["egress_policy_allows_dns"], evidence["egress_policy_allows_dependency_port"],
+            evidence["policy_allows_client"], evidence["policy_allows_dependency_port"], evidence["policy_is_narrow"],
+            evidence["egress_policy_selects_frontend"], evidence["egress_policy_allows_dns"],
+            evidence["egress_policy_allows_dependency_port"], evidence["egress_policy_is_narrow"],
             evidence["dns_resolved"], evidence["dependency_check_succeeded"],
         ])
         return VerificationResult(status="passed" if passed else "failed", passed=passed, evidence=evidence)
@@ -144,7 +177,50 @@ class OpenShiftVerifier:
 
     @staticmethod
     def _selector_matches(selector: dict[str, Any], labels: dict[str, str]) -> bool:
-        return all(labels.get(k) == v for k, v in selector.get("matchLabels", {}).items())
+        if not all(labels.get(k) == v for k, v in selector.get("matchLabels", {}).items()):
+            return False
+        for expression in selector.get("matchExpressions", []):
+            key = expression.get("key")
+            values = expression.get("values", [])
+            operator = expression.get("operator")
+            if operator == "In" and labels.get(key) not in values:
+                return False
+            if operator == "NotIn" and labels.get(key) in values:
+                return False
+            if operator == "Exists" and key not in labels:
+                return False
+            if operator == "DoesNotExist" and key in labels:
+                return False
+        return True
+
+    @classmethod
+    def _same_policy_spec(cls, actual: Any, expected: Any) -> bool:
+        actual = cls._without_none(actual)
+        expected = cls._without_none(expected)
+        actual_types = set(actual.get("policyTypes", [])) if isinstance(actual, dict) else set()
+        expected_types = set(expected.get("policyTypes", [])) if isinstance(expected, dict) else set()
+        if actual_types == expected_types == {"Egress"} and actual.get("ingress") == []:
+            actual.pop("ingress")
+        if actual_types == expected_types == {"Ingress"} and actual.get("egress") == []:
+            actual.pop("egress")
+        return cls._canonical(actual) == cls._canonical(expected)
+
+    @classmethod
+    def _without_none(cls, value: Any) -> Any:
+        if isinstance(value, dict):
+            return {key: cls._without_none(item) for key, item in value.items() if item is not None}
+        if isinstance(value, list):
+            return [cls._without_none(item) for item in value]
+        return value
+
+    @classmethod
+    def _canonical(cls, value: Any) -> Any:
+        if isinstance(value, dict):
+            return {key: cls._canonical(item) for key, item in sorted(value.items())}
+        if isinstance(value, list):
+            items = [cls._canonical(item) for item in value]
+            return sorted(items, key=lambda item: json.dumps(item, sort_keys=True))
+        return value
 
     @classmethod
     def _same(cls, actual: Any, expected: Any) -> bool:

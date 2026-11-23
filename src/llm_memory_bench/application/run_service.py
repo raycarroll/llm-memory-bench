@@ -48,12 +48,12 @@ class RunService:
         self.tau2 = Tau2Experiment(self.results_dir)
         self.evaluation = EvaluationService(self.results_dir)
 
-    async def execute(self, spec: RunSpec) -> dict[str, Any]:
+    async def execute(self, spec: RunSpec, on_event=None) -> dict[str, Any]:
         run_id = self._run_id(spec)
         if spec.kind == "extraction":
             output = await self.extraction.run(spec, run_id)
         elif spec.kind == "demo":
-            output = await self.demo.run(spec, run_id)
+            output = await self.demo.run(spec, run_id, on_event=on_event)
         elif spec.kind == "value":
             output = await self.value.run(spec, run_id)
         elif spec.kind == "tau2":
@@ -128,9 +128,9 @@ class RunService:
                 lines.append(json.dumps(event, sort_keys=True))
         return "\n".join(lines) + "\n"
 
-    def execute_sync(self, spec: RunSpec) -> dict[str, Any]:
+    def execute_sync(self, spec: RunSpec, on_event=None) -> dict[str, Any]:
         """Synchronous entry point for Streamlit callbacks and CLI callers."""
-        return asyncio.run(self.execute(spec))
+        return asyncio.run(self.execute(spec, on_event=on_event))
 
     async def evaluate(self, spec: EvaluationSpec) -> dict[str, Any]:
         """Compatibility entry point for saved-result evaluation."""

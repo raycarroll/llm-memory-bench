@@ -76,11 +76,13 @@ class OpenAIProvider(LLMProvider):
                 kwargs["tools"] = self._to_openai_tools(tools)
                 if disable_parallel_tool_calls:
                     kwargs["parallel_tool_calls"] = False
-                if tool_choice:
+                if tool_choice and tool_choice != "auto":
                     kwargs["tool_choice"] = {
                         "type": "function",
                         "function": {"name": tool_choice},
                     }
+                elif tool_choice == "auto":
+                    kwargs["tool_choice"] = "auto"
 
             # Debug: log the actual request size
             import json

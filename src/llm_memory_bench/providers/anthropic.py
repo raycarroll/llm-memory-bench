@@ -13,6 +13,16 @@ class AnthropicProvider(LLMProvider):
         super().__init__(model, **kwargs)
         api_key_env = kwargs.get("api_key_env")
         api_key = os.environ.get(api_key_env) if api_key_env else None
+        # Anthropic accepts developer instructions as part of the system
+        # parameter, while OpenAI accepts a native developer message. Keep the
+        # demo agent's prompt structure equivalent across providers.
+        developer_parts = [
+            str(message.get("content", ""))
+            for message in messages
+            if message.get("role") == "developer" and message.get("content")
+        ]
+        conversation = [message for message in messages if message.get("role") != "developer"]
+        effective_system = "\n\n".join(part for part in [system, *developer_parts] if part)
         try:
             self.client = anthropic.AsyncAnthropic(api_key=api_key)
         except Exception as e:
@@ -48,8 +58,8 @@ class AnthropicProvider(LLMProvider):
                 model=self.model,
                 max_tokens=1024,
                 temperature=0.0,  # Reduce hallucination
-                system=system,
-                messages=messages,
+                system=effective_system,
+                messages=conversation,
             )
             if tools:
                 kwargs["tools"] = self._to_anthropic_tools(tools)

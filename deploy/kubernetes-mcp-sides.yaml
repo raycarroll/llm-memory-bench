@@ -12,7 +12,7 @@ metadata:
 ---
 apiVersion: rbac.authorization.k8s.io/v1
 kind: Role
-metadata: {name: demo-memory-mcp, namespace: memory-demo-memory}
+metadata: {name: demo-memory-mcp, namespace: demo-memory}
 rules:
   - apiGroups: [""]
     resources: [pods, pods/log, events, services, endpoints]
@@ -33,7 +33,7 @@ rules:
 ---
 apiVersion: rbac.authorization.k8s.io/v1
 kind: RoleBinding
-metadata: {name: demo-memory-mcp, namespace: memory-demo-memory}
+metadata: {name: demo-memory-mcp, namespace: demo-memory}
 subjects:
   - kind: ServiceAccount
     name: demo-memory-mcp
@@ -42,7 +42,7 @@ roleRef: {apiGroup: rbac.authorization.k8s.io, kind: Role, name: demo-memory-mcp
 ---
 apiVersion: rbac.authorization.k8s.io/v1
 kind: Role
-metadata: {name: demo-baseline-mcp, namespace: memory-demo-baseline}
+metadata: {name: demo-baseline-mcp, namespace: demo-baseline}
 rules:
   - apiGroups: [""]
     resources: [pods, pods/log, events, services, endpoints]
@@ -63,7 +63,7 @@ rules:
 ---
 apiVersion: rbac.authorization.k8s.io/v1
 kind: RoleBinding
-metadata: {name: demo-baseline-mcp, namespace: memory-demo-baseline}
+metadata: {name: demo-baseline-mcp, namespace: demo-baseline}
 subjects:
   - kind: ServiceAccount
     name: demo-baseline-mcp
@@ -81,7 +81,7 @@ data:
     bind_address = "0.0.0.0"
     read_only = false
     toolsets = ["core"]
-    server_instructions = "Troubleshoot only the configured NetworkPolicy scenario. Use only namespace memory-demo-memory, inspect first, and patch only dependency-ingress and frontend-egress."
+    server_instructions = "Troubleshoot only the configured NetworkPolicy scenario. Use only namespace demo-memory, inspect first, and patch only dependency-ingress and frontend-egress."
 ---
 apiVersion: v1
 kind: ConfigMap
@@ -94,7 +94,7 @@ data:
     bind_address = "0.0.0.0"
     read_only = false
     toolsets = ["core"]
-    server_instructions = "Troubleshoot only the configured NetworkPolicy scenario. Use only namespace memory-demo-baseline, inspect first, and patch only dependency-ingress and frontend-egress."
+    server_instructions = "Troubleshoot only the configured NetworkPolicy scenario. Use only namespace demo-baseline, inspect first, and patch only dependency-ingress and frontend-egress."
 ---
 apiVersion: apps/v1
 kind: Deployment

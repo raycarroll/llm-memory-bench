@@ -12,7 +12,7 @@ def runtime(side="memory"):
     return DemoToolRuntime(side=side, spec=SPEC, memoryhub_api_key="test")
 
 
-def manifest(namespace="memory-demo-memory", name="frontend-egress", api_version="networking.k8s.io/v1"):
+def manifest(namespace="demo-memory", name="frontend-egress", api_version="networking.k8s.io/v1"):
     return f"""apiVersion: {api_version}
 kind: NetworkPolicy
 metadata:
@@ -76,6 +76,6 @@ def test_namespace_enforcement_fills_or_rejects_discovered_namespace_argument():
     demo = runtime()
     demo._tools = {"pods_get": {"name": "pods_get", "parameters": {"properties": {"namespace": {}}}}}
 
-    assert demo._enforce_namespace("pods_get", {})["namespace"] == "memory-demo-memory"
+    assert demo._enforce_namespace("pods_get", {})["namespace"] == "demo-memory"
     with pytest.raises(ValueError, match="restricted to namespace"):
         demo._enforce_namespace("pods_get", {"namespace": "other"})

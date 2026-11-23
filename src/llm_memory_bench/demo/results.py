@@ -39,8 +39,10 @@ class DemoSideResult(BaseModel):
     namespace: str
     status: Literal["completed", "failed", "timed_out"]
     content: str = ""
+    elapsed_seconds: float = Field(default=0.0, ge=0)
     turns: int = Field(default=0, ge=0)
     tool_calls: list[dict[str, Any]] = Field(default_factory=list)
+    events: list[dict[str, Any]] = Field(default_factory=list)
     memory_queries: list[str] = Field(default_factory=list)
     tokens_in: int = Field(default=0, ge=0)
     tokens_out: int = Field(default=0, ge=0)

@@ -5,11 +5,15 @@ import html
 import importlib.util
 import os
 import re
+import queue
+import threading
+import time
 from pathlib import Path
 
 from llm_memory_bench.bench import RunConfig as BenchRunConfig
 from llm_memory_bench.application import EvaluationService, RunService
 from llm_memory_bench.application.specs import EvaluationSpec, RunSpec
+from llm_memory_bench.demo import OpenShiftVerifier, load_demo_spec
 from llm_memory_bench.systems import list_systems
 from llm_memory_bench.value.dataset import load_value_dataset
 from llm_memory_bench.value.tau2 import load_tau2_memory_plan
@@ -569,7 +573,7 @@ def render_app() -> None:
             elif kind == "value":
                 with st.expander("Model & memory", expanded=False):
                     provider = st.selectbox("Provider", ["openai", "anthropic", "litellm", "vertex"])
-                    model = st.text_input("Model", value="gpt-4o")
+                    model = st.text_input("Model", value="gpt-4.1")
                     system = st.selectbox("Memory integration", list_systems())
                     mode = st.selectbox("Memory delivery", ["prompt", "tool", "both"])
                     memory_setup_mode = st.selectbox(
@@ -683,7 +687,16 @@ def render_app() -> None:
                     "Max conversations (0 = all)", min_value=0, value=1, disabled=kind != "extraction"
                 )
                 judge = st.checkbox("Run outcome judge", value=True, disabled=kind != "value")
-            submit = st.button("▶ Run benchmark", type="primary", use_container_width=True)
+            action_columns = st.columns(2)
+            with action_columns[0]:
+                reset_experiment = st.button(
+                    "Reset experiment",
+                    use_container_width=True,
+                    disabled=kind != "demo",
+                    help="Restore both OpenShift namespaces to the configured broken fixture state.",
+                )
+            with action_columns[1]:
+                submit = st.button("▶ Run benchmark", type="primary", use_container_width=True)
 
         with sidebar_eval_tab:
             st.caption("Evaluate saved runs independently from benchmark execution.")
@@ -721,6 +734,22 @@ def render_app() -> None:
         tau2_memoryhub_cleanup=tau2_memoryhub_cleanup,
     )
 
+    if reset_experiment and kind == "demo":
+        try:
+            with st.spinner("Resetting both OpenShift namespaces to the broken state..."):
+                demo_spec = load_demo_spec(demo_config_path)
+                reset_result = OpenShiftVerifier(demo_spec).reset_fixture()
+            st.session_state["demo_live_events"] = {"memory": [], "baseline": []}
+            st.session_state.pop("last_run", None)
+            if reset_result.passed:
+                st.success("Reset verified: both namespaces are in the broken fixture state.")
+            else:
+                st.error(f"Experiment reset failed: {reset_result.error or 'fixture did not reach the expected state'}")
+                if reset_result.evidence:
+                    st.json(reset_result.evidence)
+        except Exception as exc:
+            st.error(f"Experiment reset failed: {type(exc).__name__}: {exc}")
+
     evaluation_payload = st.session_state.get("last_evaluation")
     if evaluation_payload:
         st.subheader("Latest evaluation")
@@ -745,11 +774,110 @@ def render_app() -> None:
             for memory in goal.memory_bank:
                 st.markdown(f"- `{memory.category}` — {memory.fact}")
 
+    if kind == "demo":
+        with st.expander("Effective agent instructions", expanded=False):
+            effective_demo = load_demo_spec(demo_config_path)
+            st.markdown("#### Task prompt")
+            st.markdown(effective_demo.prompt)
+            st.markdown("#### System prompt")
+            st.code(effective_demo.system_prompt or "(none)", language="text")
+            st.markdown("#### Developer context")
+            st.code(
+                "You are operating only in namespace {side namespace}. "
+                "Pass that namespace to namespaced tools. The MCP server's RBAC "
+                "is the cluster access boundary.",
+                language="text",
+            )
+            st.markdown("#### Runtime rules")
+            st.markdown(
+                "- The agent may use only the tools exposed for its side.\n"
+                "- Tool calls are made serially; parallel tool calls are disabled.\n"
+                "- The agent must continue until the independent verifier passes.\n"
+                "- If verification fails, the verifier evidence is sent back as a follow-up instruction.\n"
+                "- If a required MemoryHub search has not happened, the agent is required to search before finalizing.\n"
+                f"- Maximum turns: `{spec.max_turns}` · maximum tool calls: `{effective_demo.limits.max_tool_calls}`."
+            )
+            st.markdown("#### Verification follow-up")
+            st.code(
+                "Independent verification has not passed. Continue investigating and "
+                "repairing the live workload. Verification evidence: <verifier evidence>",
+                language="text",
+            )
+            st.markdown("#### Tool choice")
+            st.code(
+                'Normal turns: "auto"\n'
+                'Required MemoryHub search: "memoryhub_search"',
+                language="text",
+            )
+
     st.subheader("Execution")
+    live_placeholders = []
+
     if submit:
         try:
             with st.spinner("Running benchmark..."):
-                payload = RunService().execute_sync(spec)
+                if kind == "demo":
+                    st.session_state["demo_live_events"] = {
+                        "memory": [],
+                        "baseline": [],
+                    }
+                    # Mount the live panels only for the active run. Rendering
+                    # them on every Streamlit rerun created empty duplicate
+                    # panels above the eventual result view.
+                    live_panels = st.columns(2)
+                    for panel, side in zip(live_panels, ("memory", "baseline")):
+                        with panel:
+                            title = "With Memory" if side == "memory" else "Baseline"
+                            color = "#15803d" if side == "memory" else "#b91c1c"
+                            st.markdown(
+                                f'<h3 style="color: {color};">{title}</h3>',
+                                unsafe_allow_html=True,
+                            )
+                            with st.container(height=650, border=True):
+                                placeholder = st.empty()
+                                live_placeholders.append(placeholder)
+                                render_live_demo_trace(st, placeholder, side, [])
+                    event_queue = queue.Queue()
+                    events_by_side = {
+                        "memory": list(st.session_state["demo_live_events"]["memory"]),
+                        "baseline": list(st.session_state["demo_live_events"]["baseline"]),
+                    }
+
+                    def on_event(side, event):
+                        event_queue.put((side, event))
+
+                    result_holder = {}
+
+                    def run_demo_background():
+                        try:
+                            result_holder["payload"] = RunService().execute_sync(
+                                spec, on_event=on_event
+                            )
+                        except BaseException as exc:
+                            result_holder["error"] = exc
+
+                    worker = threading.Thread(target=run_demo_background, daemon=True)
+                    worker.start()
+                    while worker.is_alive() or not event_queue.empty():
+                        while True:
+                            try:
+                                side, event = event_queue.get_nowait()
+                            except queue.Empty:
+                                break
+                            events_by_side[side].append(event)
+                            st.session_state["demo_live_events"][side] = list(
+                                events_by_side[side]
+                            )
+                        for placeholder, side in zip(
+                            live_placeholders, ("memory", "baseline")
+                        ):
+                            render_live_demo_trace(st, placeholder, side, events_by_side[side])
+                        time.sleep(0.15)
+                    payload = result_holder.get("payload")
+                    if payload is None:
+                        raise result_holder.get("error", RuntimeError("Demo failed"))
+                else:
+                    payload = RunService().execute_sync(spec)
             st.session_state["last_run"] = payload
             st.success(f"Completed: {payload['run_id']}")
         except Exception as exc:
@@ -757,83 +885,240 @@ def render_app() -> None:
 
     payload = st.session_state.get("last_run")
     if payload is not None:
-        st.divider()
-        st.subheader("Latest result · comparison view")
-        output_path = Path(payload["output_path"]).resolve()
-        artifact_links = [f"[Result JSON]({output_path.as_uri()})"]
-        for key, label in (
-            ("raw_output_path", "Raw run JSON"),
-            ("native_output_path", "Native τ² JSON"),
-            ("log_path", "Execution log"),
-        ):
-            # Runs kept in Streamlit session state may have been created before
-            # these artifact fields existed. Do not break the comparison view
-            # for those older payloads.
-            artifact_path = payload.get(key)
-            if artifact_path:
-                artifact_links.append(f"[{label}]({Path(artifact_path).resolve().as_uri()})")
-        st.markdown(" · ".join(artifact_links))
-        st.caption(f"Artifacts saved under `{output_path.parent}`")
-        if not payload.get("raw_output_path") or not payload.get("log_path"):
-            st.info("This result predates raw-artifact links. Run it again to create them.")
-        result = payload["result"]
-        container = result.get("container")
-        if container:
-            host = container.get("host", {})
-            st.info(
-                f"Claude Code {host.get('version', '')} · "
-                f"{container.get('model', 'unknown')} · "
-                f"{container.get('integration_profile', 'unknown')}"
-            )
-            if container.get("prompt_file"):
-                st.caption(
-                    "Memory prompt: "
-                    f"{Path(container['prompt_file']).name} · "
-                    f"{container.get('prompt_mode', 'append')}"
-                )
         run_kind = payload.get("spec", {}).get("kind", spec.kind)
+        result = payload["result"]
         if run_kind == "tau2":
+            st.divider()
+            st.subheader("Latest result · comparison view")
+            _render_artifact_links(st, payload)
             render_tau2_result(st, result)
         elif run_kind == "demo":
+            # The OpenShift demo owns its reference-style result view. Do not
+            # prepend the generic benchmark artifact/comparison chrome here.
             render_demo_result(st, result)
         elif run_kind == "value":
+            st.divider()
+            st.subheader("Latest result · comparison view")
+            _render_artifact_links(st, payload)
             render_value_result(st, result, payload.get("spec", {}))
         else:
+            st.divider()
+            st.subheader("Latest result · comparison view")
+            _render_artifact_links(st, payload)
             render_extraction_result(st, result)
     else:
         st.info("Run a benchmark to display the baseline-versus-memory comparison here.")
 
 
+def _render_artifact_links(st, payload: dict) -> None:
+    """Render generic benchmark artifacts outside the OpenShift demo view."""
+    output_path = Path(payload["output_path"]).resolve()
+    artifact_links = [f"[Result JSON]({output_path.as_uri()})"]
+    for key, label in (
+        ("raw_output_path", "Raw run JSON"),
+        ("native_output_path", "Native τ² JSON"),
+        ("log_path", "Execution log"),
+    ):
+        artifact_path = payload.get(key)
+        if artifact_path:
+            artifact_links.append(f"[{label}]({Path(artifact_path).resolve().as_uri()})")
+    st.markdown(" · ".join(artifact_links))
+    st.caption(f"Artifacts saved under `{output_path.parent}`")
+    if not payload.get("raw_output_path") or not payload.get("log_path"):
+        st.info("This result predates raw-artifact links. Run it again to create them.")
+
+
+def render_live_demo_trace(st, target, side: str, trace: list[dict]) -> None:
+    """Replace one fixed-height live panel on each polling update."""
+    with target.container():
+        st.caption(f"{len(trace)} events")
+        prompt_event = next(
+            (event for event in trace if event.get("event") == "prompt"),
+            None,
+        )
+        if prompt_event:
+            with st.container(border=True):
+                st.markdown("**Prompt**")
+                st.markdown(prompt_event.get("content", ""))
+        turns: dict[int, list[dict]] = {}
+        current_turn = 0
+        for event in trace:
+            if event.get("event") == "turn_started":
+                current_turn = int(event.get("turn", current_turn + 1))
+            turns.setdefault(current_turn, []).append(event)
+        for turn, events in turns.items():
+            with st.container(border=True):
+                st.markdown(f"**Turn {turn}**")
+                _render_demo_trace_events(st, events, show_turn=False)
+
+
+def _render_demo_trace_events(st, events: list[dict], *, show_turn: bool = True) -> None:
+    """Render one turn's events, optionally including its turn marker."""
+    for event in events:
+            kind = event.get("event")
+            if kind == "prompt":
+                continue
+            elif kind == "turn_started":
+                if show_turn:
+                    st.markdown(f"**Turn {event.get('turn')}** · model is deciding…")
+            elif kind == "model_response":
+                if event.get("content"):
+                    st.markdown(event["content"])
+                if event.get("tools"):
+                    st.caption("Requested tools: " + ", ".join(event["tools"]))
+            elif kind == "tool_completed":
+                icon = "❌" if event.get("is_error") else "✅"
+                st.markdown(f"{icon} `{event.get('name')}`")
+                result_text = str(event.get("result", ""))
+                with st.expander(f"Tool result · {event.get('name')}", expanded=False):
+                    st.code(result_text, language="text")
+            elif kind == "verification":
+                check = event.get("check", {})
+                st.caption(
+                    "Independent check · "
+                    f"frontend ready={check.get('frontend_ready')} · "
+                    f"dependency ready={check.get('dependency_ready')} · "
+                    f"passed={check.get('passed')}"
+                )
+            elif kind == "run_error":
+                st.error(event.get("error", "Agent failed."))
+
+
 def render_demo_result(st, result: dict) -> None:
-    """Render paired demo execution separately from benchmark evaluations."""
+    """Render OpenShift results in the reference harness layout."""
     demo = result.get("demo", {})
     if not demo:
         st.info("No demo result was produced.")
         return
-    st.caption(
-        f"{demo.get('demo_id', 'demo')} · {demo.get('provider', 'unknown')} · "
-        f"{demo.get('model', 'unknown')}"
-    )
     reset = demo.get("fixture_reset") or {}
     if reset.get("status") == "unavailable":
         st.warning(f"Fixture reset unavailable: {reset.get('error', 'unknown error')}")
     elif reset and not reset.get("passed"):
         st.error(f"Fixture reset failed: {reset.get('error', 'unknown error')}")
+    st.divider()
+    st.subheader("Independent OpenShift verification")
+    side_payloads = demo.get("sides", {})
+    st.markdown("### Results")
+    st.caption("Direct comparison of execution and tool-use metrics. Lower values are not automatically better; interpret them alongside the independent verification evidence.")
+
+    def _call_counts(payload: dict) -> tuple[int, int]:
+        calls = payload.get("tool_calls", [])
+        return (
+            sum(1 for call in calls if call.get("name") != "memoryhub_search"),
+            sum(1 for call in calls if call.get("name") == "memoryhub_search"),
+        )
+
+    memory_payload = side_payloads.get("memory") or {}
+    baseline_payload = side_payloads.get("baseline") or {}
+    memory_k8s, memory_hub = _call_counts(memory_payload)
+    baseline_k8s, baseline_hub = _call_counts(baseline_payload)
+    comparison_rows = [
+        ("Agent status", memory_payload.get("status", "unknown"), baseline_payload.get("status", "unknown"), None),
+        ("Independent verification", (memory_payload.get("verification") or {}).get("status", "unknown"), (baseline_payload.get("verification") or {}).get("status", "unknown"), None),
+        ("Elapsed seconds", round(memory_payload.get("elapsed_seconds", 0.0), 1), round(baseline_payload.get("elapsed_seconds", 0.0), 1), "lower"),
+        ("Model turns", memory_payload.get("turns", 0), baseline_payload.get("turns", 0), "lower"),
+        ("Input tokens", memory_payload.get("tokens_in", 0), baseline_payload.get("tokens_in", 0), "lower"),
+        ("Output tokens", memory_payload.get("tokens_out", 0), baseline_payload.get("tokens_out", 0), "lower"),
+        ("Kubernetes MCP calls", memory_k8s, baseline_k8s, "lower"),
+        ("MemoryHub MCP calls", memory_hub, baseline_hub, "lower"),
+    ]
+    comparison_data = []
+    for metric, memory_value, baseline_value, direction in comparison_rows:
+        difference = None
+        if direction and isinstance(memory_value, (int, float)) and isinstance(baseline_value, (int, float)):
+            # Positive means memory saved something for lower-is-better metrics.
+            difference = baseline_value - memory_value
+        if difference is None:
+            difference_display = "—"
+        else:
+            difference_display = (
+                f"{difference:.2f}"
+                if metric == "Elapsed seconds"
+                else f"{difference:.0f}"
+            )
+            saving = (difference / baseline_value * 100) if baseline_value else 0.0
+            difference_display += f" ({saving:.2f}% saving)"
+        comparison_data.append({
+            "Metric": metric,
+            "With Memory": memory_value,
+            "Baseline": baseline_value,
+            "Difference": difference_display,
+        })
+    import pandas as pd
+
+    comparison_frame = pd.DataFrame(comparison_data)
+
+    def _difference_style(value):
+        if value is None or pd.isna(value) or value == "—":
+            return "color: #6b7280"
+        numeric_value = float(str(value).split()[0])
+        if numeric_value > 0:
+            return "color: #15803d; font-weight: 700"
+        if numeric_value < 0:
+            return "color: #b91c1c; font-weight: 700"
+        return "color: #6b7280"
+
+    st.dataframe(
+        comparison_frame.style.map(_difference_style, subset=["Difference"]),
+        hide_index=True,
+        use_container_width=True,
+    )
+    st.markdown(
+        """
+        <style>
+        .demo-metric { min-height: 3.6rem; padding: 0.15rem 0 0.35rem; }
+        .demo-metric-label { color: rgba(49, 51, 63, 0.65); font-size: 0.82rem; line-height: 1.2; }
+        .demo-metric-value { color: rgb(49, 51, 63); font-size: 1.15rem; font-weight: 600; line-height: 1.35; }
+        </style>
+        """,
+        unsafe_allow_html=True,
+    )
     columns = st.columns(2)
     for column, side in zip(columns, ("memory", "baseline")):
         with column:
             payload = demo.get("sides", {}).get(side)
-            st.markdown(f"### {'With Memory' if side == 'memory' else 'Baseline'}")
+            title = "With Memory" if side == "memory" else "Baseline"
+            color = "#15803d" if side == "memory" else "#b91c1c"
+            st.markdown(
+                f'<h3 style="color: {color};">{title}</h3>',
+                unsafe_allow_html=True,
+            )
             if not payload:
                 st.error("No side result")
                 continue
-            st.metric("Agent status", payload.get("status", "unknown"))
+            verification = payload.get("verification") or {}
+            evidence = verification.get("evidence", {})
+            calls = payload.get("tool_calls", [])
+            kubernetes_calls = sum(
+                1 for call in calls if call.get("name") != "memoryhub_search"
+            )
+            memoryhub_calls = sum(
+                1 for call in calls if call.get("name") == "memoryhub_search"
+            )
+            def _compact_metric(column, label, value):
+                column.markdown(
+                    f'<div class="demo-metric"><div class="demo-metric-label">{html.escape(label)}</div>'
+                    f'<div class="demo-metric-value">{html.escape(str(value))}</div></div>',
+                    unsafe_allow_html=True,
+                )
+
+            metrics = st.columns(3)
+            _compact_metric(metrics[0], "Agent status", payload.get("status", "unknown"))
+            _compact_metric(metrics[1], "Model turns", payload.get("turns", 0))
+            _compact_metric(metrics[2], "Elapsed", f"{payload.get('elapsed_seconds', 0.0):.1f}s")
+            metrics = st.columns(3)
+            _compact_metric(metrics[0], "Tokens in", f"{payload.get('tokens_in', 0):,}")
+            _compact_metric(metrics[1], "Tokens out", f"{payload.get('tokens_out', 0):,}")
+            _compact_metric(metrics[2], "Total MCP calls", len(calls))
+            mcp_metrics = st.columns(2)
+            _compact_metric(mcp_metrics[0], "Kubernetes MCP", kubernetes_calls)
+            _compact_metric(mcp_metrics[1], "MemoryHub MCP", memoryhub_calls)
             st.caption(
                 f"Namespace: {payload.get('namespace', 'unknown')} · "
-                f"Turns: {payload.get('turns', 0)} · "
-                f"Tool calls: {len(payload.get('tool_calls', []))}"
+                f"Model: {demo.get('model', 'unknown')} · "
+                f"Kubernetes MCP calls: {kubernetes_calls} · "
+                f"MemoryHub MCP calls: {memoryhub_calls}"
             )
-            verification = payload.get("verification") or {}
             if verification.get("status") == "passed":
                 st.success("Independent verification: PASS")
             elif verification.get("status") == "unavailable":
@@ -842,11 +1127,38 @@ def render_demo_result(st, result: dict) -> None:
                 st.error("Independent verification: NOT VERIFIED")
             if payload.get("error"):
                 st.error(payload["error"])
-            with st.expander("Verification evidence", expanded=False):
-                st.json(verification.get("evidence", {}))
+            st.markdown("**Evidence overview**")
+            st.markdown(
+                f"- **Frontend:** {'Ready' if evidence.get('frontend_ready') else 'Not Ready'}; "
+                f"{evidence.get('frontend_restarts', 0)} restarts.\n"
+                f"- **Dependency:** {'Ready' if evidence.get('dependency_ready') else 'Not Ready'}; "
+                f"{evidence.get('service_endpoint_count', 0)} Service endpoint(s), "
+                f"endpoint present: {evidence.get('service_has_dependency_endpoint', False)}.\n"
+                f"- **NetworkPolicy:** ingress narrow={evidence.get('policy_is_narrow', False)}; "
+                f"egress narrow={evidence.get('egress_policy_is_narrow', False)}; "
+                f"DNS allowed={evidence.get('egress_policy_allows_dns', False)}; "
+                f"dependency TCP 8080 allowed={evidence.get('egress_policy_allows_dependency_port', False)}.\n"
+                f"- **Functional check:** DNS resolved={evidence.get('dns_resolved', False)}; "
+                f"dependency check succeeded={evidence.get('dependency_check_succeeded', False)}."
+            )
+            with st.expander("Raw verification evidence", expanded=False):
+                st.json(evidence)
             with st.expander("Agent output and tool trace", expanded=False):
                 st.markdown(payload.get("content", ""))
                 st.json(payload.get("tool_calls", []))
+                events = payload.get("events", [])
+                if events:
+                    st.markdown("**Chronological agent trace**")
+                    grouped: dict[int, list[dict]] = {}
+                    current_turn = 0
+                    for event in events:
+                        if event.get("event") == "turn_started":
+                            current_turn = int(event.get("turn", current_turn + 1))
+                        grouped.setdefault(current_turn, []).append(event)
+                    for turn, turn_events in grouped.items():
+                        with st.container(border=True):
+                            st.markdown(f"**Turn {turn}**")
+                            _render_demo_trace_events(st, turn_events, show_turn=False)
 
 
 def render_tau2_result(st, result: dict) -> None:
