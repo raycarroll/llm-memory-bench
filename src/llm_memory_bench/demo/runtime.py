@@ -246,8 +246,15 @@ class DemoToolRuntime:
         resource_id = f"{str(manifest.get('kind', '')).lower()}/{metadata.get('name', '')}"
         if resource_id not in set(self.spec.change_resources):
             return False, f"resource {resource_id!r} is not writable in this demo"
-        if manifest.get("apiVersion") != "networking.k8s.io/v1":
-            return False, "only networking.k8s.io/v1 NetworkPolicy resources can be changed"
+        api_version = manifest.get("apiVersion")
+        if not isinstance(api_version, str) or not api_version.strip():
+            return False, "the manifest must include a non-empty apiVersion"
+        allowed_versions = self.spec.change_resource_api_versions.get(resource_id)
+        if allowed_versions and api_version not in allowed_versions:
+            return False, (
+                f"apiVersion {api_version!r} is not allowed for {resource_id!r}; "
+                f"expected one of {', '.join(allowed_versions)}"
+            )
         return True, ""
 
     def _enforce_namespace(self, name: str, arguments: dict[str, Any]) -> dict[str, Any]:

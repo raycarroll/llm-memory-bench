@@ -12,9 +12,9 @@ def runtime(side="memory"):
     return DemoToolRuntime(side=side, spec=SPEC, memoryhub_api_key="test")
 
 
-def manifest(namespace="demo-memory", name="frontend-egress", api_version="networking.k8s.io/v1"):
+def manifest(namespace="demo-memory", name="frontend-egress", api_version="networking.k8s.io/v1", kind="NetworkPolicy"):
     return f"""apiVersion: {api_version}
-kind: NetworkPolicy
+kind: {kind}
 metadata:
   name: {name}
   namespace: {namespace}
@@ -58,7 +58,7 @@ def test_change_validation_requires_exact_namespace_resource_and_api():
     for kwargs, expected in [
         ({"resource": manifest(namespace="other")}, "namespace"),
         ({"resource": manifest(name="deployment/frontend")}, "not writable"),
-        ({"resource": manifest(api_version="v1")}, "networking.k8s.io/v1"),
+        ({"resource": manifest(api_version="v1")}, "apiVersion"),
     ]:
         allowed, reason = demo._validate_change("resources_create_or_update", kwargs)
         assert allowed is False
@@ -79,3 +79,17 @@ def test_namespace_enforcement_fills_or_rejects_discovered_namespace_argument():
     assert demo._enforce_namespace("pods_get", {})["namespace"] == "demo-memory"
     with pytest.raises(ValueError, match="restricted to namespace"):
         demo._enforce_namespace("pods_get", {"namespace": "other"})
+
+
+def test_change_validation_supports_configured_non_networkpolicy_resources():
+    spec = SPEC.model_copy(update={
+        "change_resources": ["deployment/frontend"],
+        "change_resource_api_versions": {"deployment/frontend": ["apps/v1"]},
+    })
+    demo = DemoToolRuntime(side="memory", spec=spec, memoryhub_api_key="test")
+    allowed, reason = demo._validate_change(
+        "resources_create_or_update",
+        {"resource": manifest(name="frontend", kind="Deployment", api_version="apps/v1")},
+    )
+    assert allowed is True
+    assert reason == ""

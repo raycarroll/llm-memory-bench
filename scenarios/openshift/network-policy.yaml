@@ -64,6 +64,11 @@ change_making_tools:
 change_resources:
   - networkpolicy/dependency-ingress
   - networkpolicy/frontend-egress
+change_resource_api_versions:
+  networkpolicy/dependency-ingress:
+    - networking.k8s.io/v1
+  networkpolicy/frontend-egress:
+    - networking.k8s.io/v1
 memory_search_required_before_change: true
 limits:
   max_turns: 30

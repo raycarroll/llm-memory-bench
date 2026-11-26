@@ -53,6 +53,7 @@ class DemoSpec(BaseModel):
     read_only_tools: list[str] = Field(min_length=1)
     change_making_tools: list[str] = Field(min_length=1)
     change_resources: list[str] = Field(min_length=1)
+    change_resource_api_versions: dict[str, list[str]] = Field(default_factory=dict)
     limits: DemoLimits = Field(default_factory=DemoLimits)
     fixture: dict[str, Any] = Field(default_factory=dict)
     verification: dict[str, Any] = Field(default_factory=dict)
