@@ -11,6 +11,33 @@ metadata:
   namespace: kubernetes-mcp-server
 ---
 apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+  name: demo-kubernetes-mcp-discovery
+rules:
+  # The Kubernetes MCP server performs API discovery before resource calls.
+  # Keep this limited to discovery endpoints; workload access remains
+  # namespace-scoped in the Roles below.
+  - nonResourceURLs: ["/api", "/api/*", "/apis", "/apis/*", "/version"]
+    verbs: [get]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRoleBinding
+metadata:
+  name: demo-kubernetes-mcp-discovery
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: ClusterRole
+  name: demo-kubernetes-mcp-discovery
+subjects:
+  - kind: ServiceAccount
+    name: demo-memory-mcp
+    namespace: kubernetes-mcp-server
+  - kind: ServiceAccount
+    name: demo-baseline-mcp
+    namespace: kubernetes-mcp-server
+---
+apiVersion: rbac.authorization.k8s.io/v1
 kind: Role
 metadata: {name: demo-memory-mcp, namespace: demo-memory}
 rules:

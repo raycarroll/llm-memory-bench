@@ -13,7 +13,11 @@ from pathlib import Path
 from llm_memory_bench.bench import RunConfig as BenchRunConfig
 from llm_memory_bench.application import EvaluationService, RunService
 from llm_memory_bench.application.specs import EvaluationSpec, RunSpec
-from llm_memory_bench.demo import OpenShiftVerifier, load_demo_spec
+from llm_memory_bench.demo import OpenShiftVerifier, clear_memoryhub_project, load_demo_spec
+from llm_memory_bench.demo.driver import (
+    MEMORY_PREPARATION_INSTRUCTIONS,
+    resolve_memoryhub_key,
+)
 from llm_memory_bench.systems import list_systems
 from llm_memory_bench.value.dataset import load_value_dataset
 from llm_memory_bench.value.tau2 import load_tau2_memory_plan
@@ -433,10 +437,13 @@ def render_app() -> None:
             system = "simple"
             mode = "prompt"
             memory_setup_mode = "seeded"
+            demo_prepare_memory = False
+            demo_prepare_max_turns = 60
             user_simulator_provider = None
             user_simulator_model = None
             judge_provider = None
             judge_model = None
+            continue_demo = False
 
             with st.expander("Scenario", expanded=True):
                 value_datasets = {
@@ -666,6 +673,14 @@ def render_app() -> None:
                     model = st.text_input("Model", value="gpt-4o")
                     system = st.selectbox("Memory system", ["memoryhub"])
                     mode = st.selectbox("Memory mode", ["both"])
+                    demo_prepare_memory = st.checkbox(
+                        "Prepare memory from With Memory side",
+                        value=False,
+                        help=(
+                            "Run the With Memory side first with MemoryHub write access, "
+                            "then reset the fixture and use those memories in the comparison."
+                        ),
+                    )
                 st.info("The demo runs paired memory and baseline agents against isolated OpenShift namespaces.")
                 provider = "openai"
                 model = tau2_agent_model
@@ -679,7 +694,14 @@ def render_app() -> None:
                         model = st.text_input("Model", value="gpt-4o")
                         system = st.selectbox("Memory integration", list_systems())
             with st.expander("Limits & evaluation", expanded=False):
-                max_turns = st.number_input("Max turns", min_value=1, value=10, disabled=kind not in {"value", "demo"})
+                max_turns = st.number_input("Max turns", min_value=1, value=30, disabled=kind not in {"value", "demo"})
+                demo_prepare_max_turns = st.number_input(
+                    "Preparation max turns",
+                    min_value=1,
+                    value=60,
+                    disabled=kind != "demo" or not demo_prepare_memory,
+                    help="Turn limit for the With Memory preparation run; the comparison uses Max turns.",
+                )
                 max_scenarios = st.number_input(
                     "Max scenarios (0 = all)", min_value=0, value=1, disabled=kind != "value"
                 )
@@ -693,7 +715,10 @@ def render_app() -> None:
                     "Reset experiment",
                     use_container_width=True,
                     disabled=kind != "demo",
-                    help="Restore both OpenShift namespaces to the configured broken fixture state.",
+                    help=(
+                        "Restore both OpenShift namespaces to the configured broken fixture "
+                        "state and clear all memories in the scenario's MemoryHub project."
+                    ),
                 )
             with action_columns[1]:
                 submit = st.button("▶ Run benchmark", type="primary", use_container_width=True)
@@ -702,12 +727,26 @@ def render_app() -> None:
             st.caption("Evaluate saved runs independently from benchmark execution.")
             render_evaluation_panel(st)
 
+    # Keep one stable delta root for the live panels across Streamlit reruns.
+    # Recreating this placeholder only inside the run handler lets the
+    # preparation trace survive as a grey ghost when Continue is clicked.
+    live_root = st.empty()
+    continue_requested = st.session_state.pop("continue_demo", False)
+    st.session_state.setdefault("demo_panel_generation", 0)
+    if st.session_state.pop("clear_demo_panels", False):
+        st.session_state["demo_live_events"] = {"memory": [], "baseline": []}
+        # Use the same root for the replacement run instead of inserting an
+        # empty transition rerun at a different delta location.
+        live_root.empty()
+        continue_requested = True
     spec = RunSpec(
         kind=kind,
         execution=execution,
         dataset_path=dataset_path,
         container_config_path=container_config_path,
         demo_config_path=demo_config_path,
+        demo_prepare_memory=demo_prepare_memory and not continue_requested,
+        demo_prepare_max_turns=int(demo_prepare_max_turns),
         goal_id=goal_id,
         provider=provider,
         model=model,
@@ -738,11 +777,17 @@ def render_app() -> None:
         try:
             with st.spinner("Resetting both OpenShift namespaces to the broken state..."):
                 demo_spec = load_demo_spec(demo_config_path)
+                memory_cleanup = clear_memoryhub_project(
+                    demo_spec, resolve_memoryhub_key()
+                )
                 reset_result = OpenShiftVerifier(demo_spec).reset_fixture()
             st.session_state["demo_live_events"] = {"memory": [], "baseline": []}
             st.session_state.pop("last_run", None)
             if reset_result.passed:
-                st.success("Reset verified: both namespaces are in the broken fixture state.")
+                st.success(
+                    "Reset verified: both namespaces are in the broken fixture state. "
+                    f"Cleared {memory_cleanup['deleted']} scenario memories from MemoryHub."
+                )
             else:
                 st.error(f"Experiment reset failed: {reset_result.error or 'fixture did not reach the expected state'}")
                 if reset_result.evidence:
@@ -777,16 +822,41 @@ def render_app() -> None:
     if kind == "demo":
         with st.expander("Effective agent instructions", expanded=False):
             effective_demo = load_demo_spec(demo_config_path)
+
+            def _wrapped_instructions(text: str) -> None:
+                st.markdown(
+                    '<div class="effective-instructions">'
+                    + html.escape(text).replace("\n", "<br>")
+                    + "</div>",
+                    unsafe_allow_html=True,
+                )
+
+            st.markdown(
+                """
+                <style>
+                .effective-instructions {
+                    white-space: normal;
+                    overflow-wrap: anywhere;
+                    word-break: normal;
+                    line-height: 1.55;
+                    padding: 0.75rem;
+                    border: 1px solid rgba(128, 128, 128, 0.25);
+                    border-radius: 0.4rem;
+                    background: rgba(128, 128, 128, 0.06);
+                }
+                </style>
+                """,
+                unsafe_allow_html=True,
+            )
             st.markdown("#### Task prompt")
             st.markdown(effective_demo.prompt)
             st.markdown("#### System prompt")
-            st.code(effective_demo.system_prompt or "(none)", language="text")
+            _wrapped_instructions(effective_demo.system_prompt or "(none)")
             st.markdown("#### Developer context")
-            st.code(
+            _wrapped_instructions(
                 "You are operating only in namespace {side namespace}. "
                 "Pass that namespace to namespaced tools. The MCP server's RBAC "
-                "is the cluster access boundary.",
-                language="text",
+                "is the cluster access boundary."
             )
             st.markdown("#### Runtime rules")
             st.markdown(
@@ -795,25 +865,27 @@ def render_app() -> None:
                 "- The agent must continue until the independent verifier passes.\n"
                 "- If verification fails, the verifier evidence is sent back as a follow-up instruction.\n"
                 "- If a required MemoryHub search has not happened, the agent is required to search before finalizing.\n"
-                f"- Maximum turns: `{spec.max_turns}` · maximum tool calls: `{effective_demo.limits.max_tool_calls}`."
+                f"- Maximum turns: `{spec.max_turns}`. Tool calls are bounded by the turn and overall timeout limits."
             )
+            st.markdown("#### Memory preparation instructions")
+            _wrapped_instructions(MEMORY_PREPARATION_INSTRUCTIONS)
             st.markdown("#### Verification follow-up")
-            st.code(
+            _wrapped_instructions(
                 "Independent verification has not passed. Continue investigating and "
-                "repairing the live workload. Verification evidence: <verifier evidence>",
-                language="text",
+                "repairing the live workload. Verification evidence: <verifier evidence>"
             )
-            st.markdown("#### Tool choice")
-            st.code(
-                'Normal turns: "auto"\n'
-                'Required MemoryHub search: "memoryhub_search"',
-                language="text",
+            st.markdown("#### Tool access by phase")
+            _wrapped_instructions(
+                "Preparation: Kubernetes MCP + memoryhub_write only.\n"
+                "Comparison With Memory: Kubernetes MCP + memoryhub_search.\n"
+                "Comparison Baseline: Kubernetes MCP only.\n"
+                "Tool calls are selected automatically by the agent."
             )
 
     st.subheader("Execution")
     live_placeholders = []
 
-    if submit:
+    if submit or continue_requested:
         try:
             with st.spinner("Running benchmark..."):
                 if kind == "demo":
@@ -824,19 +896,30 @@ def render_app() -> None:
                     # Mount the live panels only for the active run. Rendering
                     # them on every Streamlit rerun created empty duplicate
                     # panels above the eventual result view.
-                    live_panels = st.columns(2)
-                    for panel, side in zip(live_panels, ("memory", "baseline")):
-                        with panel:
-                            title = "With Memory" if side == "memory" else "Baseline"
-                            color = "#15803d" if side == "memory" else "#b91c1c"
-                            st.markdown(
-                                f'<h3 style="color: {color};">{title}</h3>',
-                                unsafe_allow_html=True,
-                            )
-                            with st.container(height=650, border=True):
-                                placeholder = st.empty()
-                                live_placeholders.append(placeholder)
-                                render_live_demo_trace(st, placeholder, side, [])
+                    active_live_sides = (
+                        ("memory",)
+                        if demo_prepare_memory and not continue_requested
+                        else ("memory", "baseline")
+                    )
+                    panel_generation = st.session_state["demo_panel_generation"]
+                    with live_root.container():
+                        live_panels = st.columns(len(active_live_sides))
+                        for panel, side in zip(live_panels, active_live_sides):
+                            with panel:
+                                title = "With Memory" if side == "memory" else "Baseline"
+                                color = "#15803d" if side == "memory" else "#b91c1c"
+                                st.markdown(
+                                    f'<h3 style="color: {color};">{title}</h3>',
+                                    unsafe_allow_html=True,
+                                )
+                                with st.container(
+                                    height=650,
+                                    border=True,
+                                    key=f"demo-live-panel-{side}-{panel_generation}",
+                                ):
+                                    placeholder = st.empty()
+                                    live_placeholders.append(placeholder)
+                                    render_live_demo_trace(st, placeholder, side, [])
                     event_queue = queue.Queue()
                     events_by_side = {
                         "memory": list(st.session_state["demo_live_events"]["memory"]),
@@ -868,9 +951,7 @@ def render_app() -> None:
                             st.session_state["demo_live_events"][side] = list(
                                 events_by_side[side]
                             )
-                        for placeholder, side in zip(
-                            live_placeholders, ("memory", "baseline")
-                        ):
+                        for placeholder, side in zip(live_placeholders, active_live_sides):
                             render_live_demo_trace(st, placeholder, side, events_by_side[side])
                         time.sleep(0.15)
                     payload = result_holder.get("payload")
@@ -895,6 +976,43 @@ def render_app() -> None:
         elif run_kind == "demo":
             # The OpenShift demo owns its reference-style result view. Do not
             # prepend the generic benchmark artifact/comparison chrome here.
+            preparation = result.get("demo", {}).get("preparation")
+            if preparation is not None:
+                status = preparation.get("status", "unknown")
+                writes = preparation.get("memory_writes", 0)
+                prep_verified = (preparation.get("verification") or {}).get("passed") is True
+                if status == "completed" or prep_verified:
+                    suffix = " (agent budget exhausted)" if status == "timed_out" else ""
+                    st.success(f"Memory preparation completed: {writes} memories written from the With Memory side.")
+                    if suffix:
+                        st.caption(f"Preparation execution status: timed_out{suffix}; independent verification passed.")
+                else:
+                    st.warning(
+                        f"Memory preparation {status}: {writes} memories written. "
+                        f"{preparation.get('error') or ''}"
+                    )
+                if "tokens_in" in preparation:
+                    st.caption(
+                        "Preparation cost: "
+                        f"{preparation.get('turns', 0)} turns · "
+                        f"{preparation.get('tokens_in', 0):,} input tokens · "
+                        f"{preparation.get('tokens_out', 0):,} output tokens. "
+                        "These tokens are separate from the comparison-side metrics."
+                    )
+                if (
+                    not result.get("demo", {}).get("sides")
+                    and preparation.get("status") in {"completed", "timed_out"}
+                ):
+                    if st.button("Continue", type="primary", use_container_width=True):
+                        st.session_state["continue_demo"] = True
+                        st.session_state.pop("last_run", None)
+                        st.session_state["demo_panel_generation"] += 1
+                        st.session_state["clear_demo_panels"] = True
+                        st.session_state["demo_live_events"] = {
+                            "memory": [],
+                            "baseline": [],
+                        }
+                        st.rerun()
             render_demo_result(st, result)
         elif run_kind == "value":
             st.divider()
@@ -929,7 +1047,7 @@ def _render_artifact_links(st, payload: dict) -> None:
 
 
 def render_live_demo_trace(st, target, side: str, trace: list[dict]) -> None:
-    """Replace one fixed-height live panel on each polling update."""
+    """Refresh one fixed-height live panel without replacing its scroll root."""
     with target.container():
         st.caption(f"{len(trace)} events")
         prompt_event = next(
@@ -1010,10 +1128,18 @@ def render_demo_result(st, result: dict) -> None:
 
     memory_payload = side_payloads.get("memory") or {}
     baseline_payload = side_payloads.get("baseline") or {}
+
+    def _execution_status(payload: dict) -> str:
+        status = payload.get("status", "unknown")
+        verification = payload.get("verification") or {}
+        if status == "timed_out" and verification.get("passed") is True:
+            return "verified (agent budget exhausted)"
+        return status
+
     memory_k8s, memory_hub = _call_counts(memory_payload)
     baseline_k8s, baseline_hub = _call_counts(baseline_payload)
     comparison_rows = [
-        ("Agent status", memory_payload.get("status", "unknown"), baseline_payload.get("status", "unknown"), None),
+        ("Agent status", _execution_status(memory_payload), _execution_status(baseline_payload), None),
         ("Independent verification", (memory_payload.get("verification") or {}).get("status", "unknown"), (baseline_payload.get("verification") or {}).get("status", "unknown"), None),
         ("Elapsed seconds", round(memory_payload.get("elapsed_seconds", 0.0), 1), round(baseline_payload.get("elapsed_seconds", 0.0), 1), "lower"),
         ("Model turns", memory_payload.get("turns", 0), baseline_payload.get("turns", 0), "lower"),
@@ -1103,7 +1229,7 @@ def render_demo_result(st, result: dict) -> None:
                 )
 
             metrics = st.columns(3)
-            _compact_metric(metrics[0], "Agent status", payload.get("status", "unknown"))
+            _compact_metric(metrics[0], "Agent status", _execution_status(payload))
             _compact_metric(metrics[1], "Model turns", payload.get("turns", 0))
             _compact_metric(metrics[2], "Elapsed", f"{payload.get('elapsed_seconds', 0.0):.1f}s")
             metrics = st.columns(3)
@@ -1125,6 +1251,11 @@ def render_demo_result(st, result: dict) -> None:
                 st.warning(f"Verification unavailable: {verification.get('error', 'unknown error')}")
             else:
                 st.error("Independent verification: NOT VERIFIED")
+            if verification.get("checked_at"):
+                st.caption(
+                    "Verification snapshot: "
+                    f"{verification['checked_at']} (live cluster state observed by the independent verifier)."
+                )
             if payload.get("error"):
                 st.error(payload["error"])
             st.markdown("**Evidence overview**")

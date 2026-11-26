@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from datetime import datetime, timezone
 from typing import Any, Literal
 
 from pydantic import BaseModel, ConfigDict, Field, model_validator
@@ -19,6 +20,7 @@ class VerificationResult(BaseModel):
     passed: bool
     evidence: dict[str, Any] = Field(default_factory=dict)
     error: str | None = None
+    checked_at: datetime = Field(default_factory=lambda: datetime.now(timezone.utc))
 
     @model_validator(mode="after")
     def validate_consistency(self) -> "VerificationResult":
@@ -64,6 +66,7 @@ class DemoRunResult(BaseModel):
     sides: dict[str, DemoSideResult]
     fixture_reset: VerificationResult | None = None
     preflight: dict[str, Any] = Field(default_factory=dict)
+    preparation: dict[str, Any] | None = None
 
     def independent_passed(self) -> bool:
         """Return true only when both sides independently pass verification."""

@@ -20,13 +20,15 @@ class RunSpec(BaseModel):
     dataset_path: str
     container_config_path: str | None = None
     demo_config_path: str | None = None
+    demo_prepare_memory: bool = False
+    demo_prepare_max_turns: int = Field(default=60, ge=1)
     goal_id: str | None = None
     provider: str = "openai"
     model: str = "gpt-4o"
     system: str = "simple"
     mode: str = "prompt"
     memory_setup_mode: Literal["seeded", "capture_first"] = "seeded"
-    max_turns: int = Field(default=10, ge=1)
+    max_turns: int = Field(default=30, ge=1)
     max_scenarios: int | None = Field(default=None, ge=1)
     max_conversations: int | None = Field(default=None, ge=1)
     judge_during_run: bool = True

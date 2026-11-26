@@ -140,9 +140,6 @@ class DemoAgent:
 
                     tool_results: dict[str, tuple[str, bool]] = {}
                     for call in response.tool_calls:
-                        if len(result.tool_calls) >= self.spec.limits.max_tool_calls:
-                            result.status = "timed_out"
-                            raise RuntimeError("demo tool-call limit reached")
                         call_started = time.monotonic()
                         if force_memory_search and call.name != MEMORYHUB_SEARCH_NAME:
                             text, failed = "Blocked: search MemoryHub first.", True
@@ -188,12 +185,34 @@ class DemoAgent:
                 else:
                     result.status = "timed_out"
         except Exception as exc:
-            result.error = f"{type(exc).__name__}: {exc}"
+            result.error = self._format_exception(exc)
             if result.status != "timed_out":
                 result.status = "failed"
             self._emit("run_error", error=result.error)
         result.elapsed_seconds = round(time.monotonic() - started, 3)
         return result
+
+    @staticmethod
+    def _format_exception(exc: BaseException) -> str:
+        """Preserve the useful leaf error from asyncio task groups."""
+
+        leaves: list[str] = []
+
+        def visit(error: BaseException) -> None:
+            nested = getattr(error, "exceptions", None)
+            if nested:
+                for child in nested:
+                    visit(child)
+                return
+            message = str(error).strip()
+            rendered = f"{type(error).__name__}: {message}" if message else type(error).__name__
+            if rendered not in leaves:
+                leaves.append(rendered)
+
+        visit(exc)
+        if leaves:
+            return "Multiple errors: " + " | ".join(leaves)
+        return f"{type(exc).__name__}: {exc}"
 
     @staticmethod
     def _provider_tool(tool: dict[str, Any]) -> dict[str, Any]:

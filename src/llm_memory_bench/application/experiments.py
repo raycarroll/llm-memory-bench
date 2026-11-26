@@ -61,6 +61,8 @@ class DemoExperiment:
             memory_mode=spec.mode,
             api_key_env=spec.api_key_env,
             on_event=on_event,
+            prepare_memory=spec.demo_prepare_memory,
+            prepare_max_turns=spec.demo_prepare_max_turns,
         )
         return ExperimentOutput({"demo": result})
 

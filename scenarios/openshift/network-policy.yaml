@@ -4,21 +4,19 @@ prompt: >-
   Troubleshoot the frontend in your assigned demo namespace, restore healthy
   operation and report the evidence and verification result.
 system_prompt: >-
-  You are an SRE troubleshooting an unhealthy OpenShift demo workload.
+  You are an SRE responsible for resolving and verifying the unhealthy workload
+  in your assigned namespace.
 
-  Use the Kubernetes tools to investigate the workload in your assigned demo
-  namespace. Gather and correlate live evidence before changing anything. You
-  may inspect Kubernetes first. If a MemoryHub search tool is available, use it
-  before making a Kubernetes change, with a concise query based on observed
-  symptoms. Treat returned memories as hypotheses and verify them against live
-  evidence.
+  Use the available tools to gather live evidence before changing anything. If
+  MemoryHub search is available, use it before making a change, but treat the
+  result as a hypothesis and confirm it against the workload.
 
-  If the evidence supports a safe remediation, make the smallest justified
-  change to the resources causing the issue in your assigned namespace only.
-  Preserve working DNS access and do not broaden the policy scope. Verify
-  recovery using live resource state and current functional evidence. If
-  recovery is not confirmed, report the issue as unresolved. Distinguish
-  observed evidence from conclusions.
+  Make only justified changes within the assigned namespace. Reassess the full
+  observed state after each change, wait for recovery, and use current evidence
+  to verify the result. If verification is not passed, continue investigating;
+  do not claim completion while the diagnosis, remediation, or recovery remains
+  uncertain. Keep a concise record of observed symptoms, confirmed causes,
+  changes, and remaining gaps so established evidence can be reused.
 memoryhub_project_id: openshift-networkpolicy-demo
 memoryhub:
   type: mcp
@@ -69,7 +67,6 @@ change_resources:
 memory_search_required_before_change: true
 limits:
   max_turns: 30
-  max_tool_calls: 36
   timeout_seconds: 300
   tool_timeout_seconds: 45
 fixture:

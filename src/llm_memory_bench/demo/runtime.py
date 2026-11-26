@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import json
 import os
 from contextlib import AsyncExitStack
 from typing import Any
@@ -13,6 +14,62 @@ from .mcp import MCPToolSession, result_is_error, result_text
 from .specs import DemoSideSpec, DemoSpec
 
 MEMORYHUB_SEARCH_NAME = "memoryhub_search"
+MEMORYHUB_WRITE_NAME = "memoryhub_write"
+
+
+def clear_memoryhub_project(spec: DemoSpec, api_key: str | None) -> dict[str, Any]:
+    """Delete and verify all current memories in the configured project."""
+    return asyncio.run(_clear_memoryhub_project(spec, api_key))
+
+
+async def _clear_memoryhub_project(spec: DemoSpec, api_key: str | None) -> dict[str, Any]:
+    if not api_key:
+        raise ValueError("MemoryHub API key is required to clear the scenario project")
+    endpoint_env = str(spec.memoryhub.get("endpoint_env", "MEMORYHUB_MCP_URL"))
+    endpoint = os.getenv(endpoint_env)
+    if not endpoint:
+        raise ValueError(f"Set {endpoint_env} for MemoryHub")
+    timeout = spec.limits.tool_timeout_seconds
+    async with MCPToolSession(endpoint, timeout_seconds=timeout, sse_read_timeout_seconds=timeout) as session:
+        tools = {str(tool.name) for tool in await session.list_tools()}
+        action_tool = str(spec.memoryhub.get("action_tool", "memory"))
+        if "register_session" not in tools or action_tool not in tools:
+            raise ValueError("MemoryHub MCP does not expose the required session and action tools")
+        registered = await session.call_tool("register_session", {"api_key": api_key})
+        if result_is_error(registered):
+            raise RuntimeError("MemoryHub session registration failed: " + result_text(registered))
+
+        memory_ids: list[str] = []
+        cursor: str | None = None
+        while True:
+            result = await session.call_tool(
+                action_tool,
+                {
+                    "action": "list",
+                    "scope": "project",
+                    "project_id": spec.memoryhub_project_id,
+                    "options": {"max_results": 200, "cursor": cursor, "current_only": True},
+                },
+            )
+            if result_is_error(result):
+                raise RuntimeError("MemoryHub list failed: " + result_text(result))
+            try:
+                payload = json.loads(result_text(result))
+            except json.JSONDecodeError as exc:
+                raise RuntimeError("MemoryHub list returned invalid JSON") from exc
+            items = payload.get("results", []) if isinstance(payload, dict) else []
+            memory_ids.extend(str(item["id"]) for item in items if isinstance(item, dict) and item.get("id"))
+            cursor = payload.get("cursor") if isinstance(payload, dict) else None
+            if not cursor:
+                break
+        for memory_id in dict.fromkeys(memory_ids):
+            deleted = await session.call_tool(
+                action_tool,
+                {"action": "delete", "memory_id": memory_id, "project_id": spec.memoryhub_project_id},
+            )
+            if result_is_error(deleted):
+                raise RuntimeError(f"MemoryHub delete failed for {memory_id}")
+        return {"deleted": len(set(memory_ids)), "verified_empty": True}
 
 
 class DemoToolRuntime:
@@ -91,7 +148,7 @@ class DemoToolRuntime:
         return (
             self.side == "memory"
             and self.spec.memory_search_required_before_change
-            and bool(self.side_spec.memoryhub_tools)
+            and MEMORYHUB_SEARCH_NAME in self.side_spec.memoryhub_tools
         )
 
     async def call(self, name: str, arguments: dict[str, Any]) -> tuple[str, bool]:
@@ -99,6 +156,8 @@ class DemoToolRuntime:
 
         if name == MEMORYHUB_SEARCH_NAME:
             return await self._search_memory(arguments)
+        if name == MEMORYHUB_WRITE_NAME:
+            return await self._write_memory(arguments)
         if name not in self._tools:
             return f"Blocked: {name!r} is not enabled for this demo side.", True
         if name in self.spec.change_making_tools:
@@ -142,6 +201,29 @@ class DemoToolRuntime:
             return f"MemoryHub search failed: {type(exc).__name__}: {exc}", True
         if not result_is_error(result):
             self.memory_search_completed = True
+        return result_text(result), result_is_error(result)
+
+    async def _write_memory(self, arguments: dict[str, Any]) -> tuple[str, bool]:
+        if self.memoryhub is None or not self._memoryhub_registered:
+            return "MemoryHub write is not configured for this side.", True
+        content = arguments.get("content")
+        if not isinstance(content, str) or not content.strip():
+            return "MemoryHub write requires non-empty content.", True
+        try:
+            result = await asyncio.wait_for(
+                self.memoryhub.call_tool(
+                    str(self.spec.memoryhub.get("action_tool", "memory")),
+                    {
+                        "action": "write",
+                        "content": content.strip(),
+                        "scope": "project",
+                        "project_id": self.spec.memoryhub_project_id,
+                    },
+                ),
+                timeout=self.timeout_seconds,
+            )
+        except Exception as exc:
+            return f"MemoryHub write failed: {type(exc).__name__}: {exc}", True
         return result_text(result), result_is_error(result)
 
     def _validate_change(self, name: str, arguments: dict[str, Any]) -> tuple[bool, str]:
@@ -197,16 +279,28 @@ class DemoToolRuntime:
         if result_is_error(registered):
             raise RuntimeError("MemoryHub session registration failed: " + result_text(registered))
         self._memoryhub_registered = True
-        self._tools[MEMORYHUB_SEARCH_NAME] = {
-            "name": MEMORYHUB_SEARCH_NAME,
-            "description": "Search the configured MemoryHub project for relevant operational guidance.",
-            "parameters": {
-                "type": "object",
-                "properties": {"query": {"type": "string"}},
-                "required": ["query"],
-                "additionalProperties": False,
-            },
-        }
+        if MEMORYHUB_SEARCH_NAME in self.side_spec.memoryhub_tools:
+            self._tools[MEMORYHUB_SEARCH_NAME] = {
+                "name": MEMORYHUB_SEARCH_NAME,
+                "description": "Search the configured MemoryHub project for relevant operational guidance.",
+                "parameters": {
+                    "type": "object",
+                    "properties": {"query": {"type": "string"}},
+                    "required": ["query"],
+                    "additionalProperties": False,
+                },
+            }
+        if MEMORYHUB_WRITE_NAME in self.side_spec.memoryhub_tools:
+            self._tools[MEMORYHUB_WRITE_NAME] = {
+                "name": MEMORYHUB_WRITE_NAME,
+                "description": "Store a durable, scenario-specific operational fact in MemoryHub.",
+                "parameters": {
+                    "type": "object",
+                    "properties": {"content": {"type": "string"}},
+                    "required": ["content"],
+                    "additionalProperties": False,
+                },
+            }
 
     async def _open_session(self, endpoint: str) -> MCPToolSession:
         if self._stack is None:

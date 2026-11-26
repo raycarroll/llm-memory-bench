@@ -131,6 +131,27 @@ class OpenShiftVerifier:
         ])
         return VerificationResult(status="passed" if passed else "failed", passed=passed, evidence=evidence)
 
+    def verify_until_passed(
+        self,
+        namespace: str,
+        *,
+        include_logs: bool = True,
+        poll_seconds: float = 2.0,
+        wait_seconds: float = 10.0,
+    ) -> VerificationResult:
+        """Wait for Kubernetes readiness and probes to converge after a fix.
+
+        A policy update can be effective before the frontend readiness probe has
+        observed it.  Treat a failed snapshot as provisional during this short
+        convergence window, while retaining the final independent evidence.
+        """
+        deadline = time.monotonic() + wait_seconds
+        result = self.verify(namespace, include_logs=include_logs)
+        while result.passed is False and time.monotonic() < deadline:
+            time.sleep(min(poll_seconds, max(0.0, deadline - time.monotonic())))
+            result = self.verify(namespace, include_logs=include_logs)
+        return result
+
     def reset_fixture(self, *, poll_seconds: float = 2.0, wait_seconds: float = 45.0) -> VerificationResult:
         try:
             for side in self.spec.sides.values():
