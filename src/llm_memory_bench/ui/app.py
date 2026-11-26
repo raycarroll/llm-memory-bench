@@ -998,7 +998,7 @@ def render_app() -> None:
         goal_id=goal_id,
         provider=provider,
         model=model,
-        system=simulated_tool_system,
+        simulated_tool_system=simulated_tool_system,
         mode=mode,
         memory_setup_mode=memory_setup_mode,
         max_turns=int(max_turns),

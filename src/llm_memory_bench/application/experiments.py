@@ -61,7 +61,7 @@ class DemoExperiment:
             demo,
             provider_name=spec.provider,
             model=spec.model,
-            memory_system=spec.system,
+            memory_system=spec.simulated_tool_system,
             memory_mode=spec.mode,
             api_key_env=spec.api_key_env,
             on_event=on_event,
