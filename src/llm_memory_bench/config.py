@@ -22,7 +22,7 @@ class RunConfig(BaseModel):
 
 class ValueRunConfig(RunConfig):
     injection_mode: str = "prompt"  # "prompt" | "tool" | "both"
-    memory_setup_mode: Literal["seeded", "capture_first"] = "seeded"
+    memory_setup_mode: Literal["none", "seeded", "capture_first"] = "none"
     max_turns: int = 10
     judge_during_run: bool = True
     user_simulator_provider: str = "openai"

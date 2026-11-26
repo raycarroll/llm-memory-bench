@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from .runner import TrialResult
+from .simulated_tool_value_runner import TrialResult
 
 
 def compute_value_metrics(

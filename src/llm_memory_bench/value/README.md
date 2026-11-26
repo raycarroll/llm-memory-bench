@@ -67,7 +67,7 @@ llm-memory-bench value-generate-quick \
 value/
 ├── README.md              # This file
 ├── dataset.py             # ValueDataset, ValueScenario models
-├── runner.py              # Run paired trials (baseline vs memory)
+├── simulated_tool_value_runner.py # Run paired trials (baseline vs memory)
 ├── evaluator.py           # Run outcome validators and compute comparisons
 ├── metrics.py             # Compute value metrics
 └── generator_targeted.py  # Template-based scenario generation

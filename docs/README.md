@@ -2,7 +2,7 @@
 
 ## Core Concepts
 
-- **[architecture.md](architecture.md)** - System design, benchmark modes (API-level vs containerised), data flow diagrams
+- **[architecture.md](architecture.md)** - System design, benchmark modes (simulated-tool vs real-system/containerised), data flow diagrams
 - **[metrics.md](metrics.md)** - Metric definitions, formulas, interpretation guide, comparison to BFCL
 
 ## Baselines & Comparisons

@@ -48,5 +48,23 @@ versions:
       but is not present in this checkout; this artifact preserves its
       documented comprehensive categories and restrictions.
     default: false
+  - version: v4_ben_clbench_2026-11
+    commit: local-derivative-of-BEN-comprehensive-rules
+    pulled: 2026-11-20
+    notes: |
+      Corrected BEN-derived bundle for CL-Bench. Separates the capture-only
+      restriction from the normal MemoryHub working-set/search instructions.
+      Adds explicit guidance to prefer reusable schema/procedural facts over
+      unverified one-off computed answers.
+    default: false
+  - version: v5_clbench_capture_2026-11
+    commit: local-clbench-capture-derivative
+    pulled: 2026-11-25
+    notes: |
+      CL-Bench database-exploration prompt with explicit write-before-final-
+      action instructions for capture-only sessions and replay guidance for
+      fresh question sessions. Tailored to reusable schema and procedural
+      facts rather than one-off query answers.
+    default: true
 
-default_version: v2_proactive_2026-11
+default_version: v5_clbench_capture_2026-11

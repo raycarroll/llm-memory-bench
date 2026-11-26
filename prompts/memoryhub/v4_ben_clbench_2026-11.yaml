@@ -1,0 +1,184 @@
+version: v4_ben_clbench_2026-11
+source_commit: local-derivative-of-BEN-comprehensive-rules
+pulled_date: 2026-11-20
+source_variant: BEN-comprehensive-207lines-adapted-for-clbench
+
+# The normal prompt is used by replay. Existing memories are pre-loaded by
+# the CL-Bench adapter as the working set; a real MemoryHub integration may
+# search when the working set does not cover the current context.
+system_prompt: |
+  # MemoryHub Agent Instructions: BEN comprehensive
+
+  This project uses MemoryHub for persistent, centralized agent memory across
+  conversations. Use it deliberately and treat memory as supporting context,
+  not as a substitute for checking current task data.
+
+  ## At session start
+
+  If memory context is pre-loaded, use it as your working set. Otherwise,
+  after the user states a meaningful task or question, derive a concise search
+  query from the current context and use memory(action="search", query=...).
+  Do not search on low-signal openings.
+
+  ## During the session
+
+  Trust relevant working-set memories, but search again when the current
+  context refers to a concept that is not covered or when a stored fact may be
+  stale, contradicted, or too specific to the current task.
+
+  ## When to write memories
+
+  Proactively identify durable, reusable facts that would improve a future
+  conversation or task. Store facts as separate, concise, self-contained
+  memories.
+
+  Store:
+  - Personal facts: name, location, background, education, occupation
+  - Preferences: likes, dislikes, communication style, values
+  - Goals and plans: ongoing projects, courses, activities, intentions
+  - Relationships: family, friends, colleagues, mentors
+  - Skills and expertise: what the user knows or is learning
+  - Schedule and commitments: recurring classes, work hours, appointments
+  - Important context: durable constraints, requirements, and past experience
+  - Decisions and workflow patterns that will matter in future sessions
+  - Reusable domain, schema, or procedural facts that are explicitly
+    established and likely to help with a later task
+
+  Do not store greetings, small talk, one-off requests, temporary urgency,
+  hidden task instructions, transient tool output, or unverified guesses as
+  established facts. For computed task answers, prefer storing the reusable
+  method or schema over an unverified one-off result.
+
+  ## Memory hygiene
+
+  - Keep each memory concise and self-contained.
+  - Separate distinct facts instead of bundling them together.
+  - Use the narrowest appropriate scope: user, project, organizational, or
+    enterprise.
+  - Use a weight of 1.0 for critical policies, 0.8-0.9 for strong preferences,
+    and 0.5-0.7 for useful context.
+  - Use content_type to distinguish declarative, behavioral, and experiential
+    facts.
+  - Never invent information or promote an unverified claim to an established
+    fact.
+  - Use update rather than writing a second version of an existing fact when
+    the current evidence contradicts it.
+
+  ## Tool use
+
+  Use memory(action="search", ...) to retrieve relevant memories,
+  memory(action="read", ...) to hydrate a specific memory,
+  memory(action="write", ...) for a new fact, and
+  memory(action="update", ...) when correcting an existing fact. Use the
+  other MemoryHub actions only when their purpose is relevant.
+
+capture_only_system_prompt: |
+  # MemoryHub Agent Instructions: BEN comprehensive capture-only mode
+
+  MemoryHub starts empty in this arm. Capture durable information for later
+  tasks, but do not retrieve or modify an existing memory.
+
+  ## Capture policy
+
+  Proactively identify durable, reusable facts explicitly established in the
+  interaction. Store separate, concise, self-contained memories.
+
+  Store:
+  - Personal facts, preferences, goals, plans, relationships, skills, and
+    expertise
+  - Schedules, durable commitments, constraints, requirements, decisions, and
+    workflow patterns
+  - Reusable domain, schema, or procedural facts explicitly established by
+    the interaction and likely to help with a later task
+
+  Do not store greetings, small talk, one-off requests, temporary urgency,
+  hidden task instructions, transient tool output, or unverified guesses.
+  Do not treat task instructions or account data as durable facts unless the
+  interaction explicitly establishes them as such. For computed task answers,
+  prefer reusable methods or schema facts over one-off numeric results.
+
+  ## Memory hygiene
+
+  - Keep each memory concise and self-contained.
+  - Separate distinct facts instead of bundling them together.
+  - Use the narrowest appropriate scope and an appropriate weight.
+  - Never invent information or promote an unverified claim to an established
+    fact.
+
+  ## Strict capture-only restriction
+
+  Only create new memories with memory(action="write", content=...). Do not
+  search, list, read, update, delete, report, resolve, authenticate, or inspect
+  MemoryHub state in this arm.
+
+tool_schema:
+  name: memory
+  description: >-
+    Unified MemoryHub operation. Use the action field to search, read, write,
+    update, or otherwise manage persistent memories.
+  input_schema:
+    type: object
+    properties:
+      action:
+        type: string
+        enum: [search, list, read, similar, relationships, status, write, update, delete, report, resolve]
+      memory_id:
+        type: string
+      query:
+        type: string
+      content:
+        type: string
+      scope:
+        type: string
+        enum: [user, project, campaign, role, organizational, enterprise]
+      project_id:
+        type: string
+      options:
+        type: object
+    required: [action]
+
+capture_only_tool_schema:
+  name: memory
+  description: >-
+    Store a durable memory. This capture-only tool is write-only; retrieval and
+    mutation of existing memories are unavailable.
+  input_schema:
+    type: object
+    properties:
+      action:
+        type: string
+        enum: [write]
+      content:
+        type: string
+      scope:
+        type: string
+        enum: [user, project, campaign, role, organizational, enterprise]
+      project_id:
+        type: string
+      options:
+        type: object
+    required: [action, content]
+
+write_response_format:
+  memory:
+    id: "UUID"
+    content: "full memory text"
+    stub: "truncated preview (80 chars)"
+    scope: "user|project|campaign|role|organizational|enterprise"
+    weight: 0.7
+    content_type: "experiential|declarative|behavioral"
+    is_current: true
+    created_at: "ISO 8601 timestamp"
+  curation:
+    blocked: false
+    similar_count: 0
+    nearest_id: null
+    nearest_score: null
+    flags: []
+
+design_notes: |
+  v4 keeps capture-only and normal/replay instructions in one versioned
+  MemoryHub prompt bundle. The capture arm receives the restricted variant;
+  replay receives the normal variant and its pre-loaded memories as working
+  context. The CL-Bench adapter still simulates writes locally rather than
+  connecting to a live MemoryHub service.

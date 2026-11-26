@@ -1,4 +1,4 @@
-from llm_memory_bench.value.runner import _should_stop_after_agent
+from llm_memory_bench.value.simulated_tool_value_runner import _should_stop_after_agent
 
 
 def test_goal_mode_does_not_stop_on_terminal_sounding_response_before_budget():

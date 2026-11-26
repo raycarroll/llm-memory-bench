@@ -24,6 +24,14 @@ versions:
       Explicitly tells agent to acknowledge when it lacks real-time data.
       Prevents invention of business names, prices, or current info.
       Recommends user search external sources when needed.
+    default: false
+
+  - version: v3_2026-11_explicit_capture
+    commit: internal
+    pulled: 2026-11-18
+    notes: |
+      Makes durable-memory capture criteria explicit and adds positive and
+      negative examples for value-benchmark conversations.
     default: true
 
-default_version: v2_2026-09_grounded
+default_version: v3_2026-11_explicit_capture

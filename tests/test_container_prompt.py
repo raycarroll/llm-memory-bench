@@ -1,6 +1,6 @@
 from pathlib import Path
 
-from llm_memory_bench.bench import RunConfig, _load_container_system_prompt
+from llm_memory_bench.real_system_container_extraction_runner import RunConfig, _load_container_system_prompt
 
 
 PROJECT_ROOT = Path(__file__).resolve().parents[1]

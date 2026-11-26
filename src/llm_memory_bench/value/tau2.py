@@ -436,7 +436,7 @@ def run_tau2_value_benchmark(
     agent_model: str = "openai/gpt-4.1",
     user_model: str = "openai/gpt-4.1",
     memory_system: str = "simple",
-    memory_setup_mode: Literal["seeded", "capture_first"] = "capture_first",
+    memory_setup_mode: Literal["none", "seeded", "capture_first"] = "capture_first",
     seed: int = 300,
     max_steps: int = 20,
     memoryhub_live: bool = False,
@@ -445,10 +445,8 @@ def run_tau2_value_benchmark(
     """Run matched real-τ² baseline and memory-prompt arms."""
 
     tau2 = _require_tau2()
-    if memory_setup_mode not in {"seeded", "capture_first"}:
-        raise ValueError(
-            "memory_setup_mode must be 'seeded' or 'capture_first'"
-        )
+    if memory_setup_mode not in {"none", "seeded", "capture_first"}:
+        raise ValueError("memory_setup_mode must be 'none', 'seeded', or 'capture_first'")
     if plan.domain not in {"airline", "retail", "telecom"}:
         raise ValueError(f"Unsupported τ² domain: {plan.domain}")
     if not task_ids:
@@ -500,7 +498,7 @@ def run_tau2_value_benchmark(
             baseline_system = baseline_live
         else:
             baseline_system = memory
-        if memory_setup_mode == "seeded":
+        if memory_setup_mode in {"none", "seeded"}:
             baseline_bridge = Tau2MemoryBridge(memory, mode="disabled")
             baseline_system = None
         else:
@@ -519,33 +517,36 @@ def run_tau2_value_benchmark(
                 seed=seed,
                 max_steps=max_steps,
             )
-            replay_system = replay_live or memory
-            if memory_setup_mode == "seeded":
-                handoff_memories = fixture_memory
-            else:
-                handoff_memories = list(baseline_bridge.captured_memories)
-            replay_bridge = Tau2MemoryBridge(
-                replay_system,
-                mode="replay",
-                initial_memories=list(handoff_memories),
-            )
-            if replay_live is not None:
-                replay_bridge.initial_memories = replay_live.seed_memories(
-                    list(handoff_memories)
+            memory_arm = None
+            handoff_memories: list[dict[str, Any]] = []
+            if memory_setup_mode != "none":
+                replay_system = replay_live or memory
+                if memory_setup_mode == "seeded":
+                    handoff_memories = fixture_memory
+                else:
+                    handoff_memories = list(baseline_bridge.captured_memories)
+                replay_bridge = Tau2MemoryBridge(
+                    replay_system,
+                    mode="replay",
+                    initial_memories=list(handoff_memories),
                 )
-            memory_arm = _run_tau2_arm(
-                tau2,
-                domain=plan.domain,
-                task=task,
-                mode="memory_prompt",
-                memory_system=replay_system,
-                memory_facts=list(handoff_memories),
-                memory_bridge=replay_bridge,
-                agent_model=agent_model,
-                user_model=user_model,
-                seed=seed,
-                max_steps=max_steps,
-            )
+                if replay_live is not None:
+                    replay_bridge.initial_memories = replay_live.seed_memories(
+                        list(handoff_memories)
+                    )
+                memory_arm = _run_tau2_arm(
+                    tau2,
+                    domain=plan.domain,
+                    task=task,
+                    mode="memory_prompt",
+                    memory_system=replay_system,
+                    memory_facts=list(handoff_memories),
+                    memory_bridge=replay_bridge,
+                    agent_model=agent_model,
+                    user_model=user_model,
+                    seed=seed,
+                    max_steps=max_steps,
+                )
         finally:
             if memoryhub_live and memoryhub_cleanup:
                 for adapter in (replay_live, baseline_live):
@@ -570,10 +571,10 @@ def run_tau2_value_benchmark(
                     else None
                 ),
                 "baseline": baseline.as_dict(),
-                "memory_prompt": memory_arm.as_dict(),
+                "memory_prompt": memory_arm.as_dict() if memory_arm else None,
                 "reward_delta": (
                     memory_arm.reward - baseline.reward
-                    if memory_arm.reward is not None and baseline.reward is not None
+                    if memory_arm and memory_arm.reward is not None and baseline.reward is not None
                     else None
                 ),
             }
@@ -593,9 +594,13 @@ def run_tau2_value_benchmark(
             "memory_system": memory_system,
             "memory_system_info": memory.version_info(),
             "memory_flow": (
-                "scenario_seed_to_memory_arm"
-                if memory_setup_mode == "seeded"
-                else "cold_start_baseline_capture_to_replay"
+                "none"
+                if memory_setup_mode == "none"
+                else (
+                    "scenario_seed_to_memory_arm"
+                    if memory_setup_mode == "seeded"
+                    else "cold_start_baseline_capture_to_replay"
+                )
             ),
             "memory_setup_mode": memory_setup_mode,
             "memoryhub_live": memoryhub_live,

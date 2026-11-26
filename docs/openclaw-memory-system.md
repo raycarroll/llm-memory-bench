@@ -1,6 +1,6 @@
 # OpenClaw Memory System
 
-API-level adapter for [OpenClaw](https://docs.openclaw.ai/concepts/memory-architecture) memory.
+Simulated-tool adapter for [OpenClaw](https://docs.openclaw.ai/concepts/memory-architecture) memory.
 
 OpenClaw does not expose a dedicated `save_memory` tool. Durable state is plain Markdown in the agent workspace. This adapter reproduces that write surface so extraction scores are comparable with `simple`, `memoryhub`, `gbrain`, and the others.
 
@@ -35,12 +35,12 @@ Writes to `AGENTS.md` / `SOUL.md` / other workspace files do not count as stored
 - Prompt injection formats memories as `MEMORY.md` bootstrap content
 - Tool mode exposes `memory_search` / `memory_get` instead of the generic `recall_memory`
 
-## Explicitly out of scope (API-level)
+## Explicitly out of scope (simulated-tool)
 
 - Dreaming (light / REM / deep promotion into `MEMORY.md`)
 - Pre-compaction memory flush
 - Provenance / taint gates / standing intents
-- Containerised end-to-end OpenClaw (would need a real workspace + `memory-core` plugin)
+- Real-system/containerised OpenClaw (would need a real workspace + `memory-core` plugin)
 
 Those are real OpenClaw subsystems. They are not turn-level tool-calling judgment, which is what extraction measures.
 

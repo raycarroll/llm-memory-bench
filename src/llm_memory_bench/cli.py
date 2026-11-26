@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+import sys
 from datetime import datetime, timezone
 from pathlib import Path
 
@@ -16,7 +17,7 @@ from .matchers import list_matchers
 from .matchers.base import FactMatcher
 from .providers.base import ProviderError
 from .pricing import estimate_cost
-from .runner import run_benchmark
+from .simulated_tool_extraction_runner import run_benchmark
 from .systems import get_system, list_systems
 
 
@@ -523,7 +524,7 @@ def evaluate(
     system_name = run_config.system
 
     from .dataset import Conversation, Dataset, ExpectedFact, FactType, GroundTruth, Turn
-    from .runner import ConversationResult as CR, RunResult, TurnResult
+    from .simulated_tool_extraction_runner import ConversationResult as CR, RunResult, TurnResult
     from .providers.base import ToolCall
 
     # If --dataset is explicitly provided, always use it (takes precedence over embedded ground truth)
@@ -663,6 +664,129 @@ def list_systems_cmd():
         table.add_row(name, instance.description)
 
     console.print(table)
+
+
+@cli.command(name="clbench-setup")
+@click.option(
+    "--root",
+    type=click.Path(path_type=Path),
+    default=Path(".cl-bench"),
+    show_default=True,
+    help="Directory for the optional CL-Bench checkout and virtualenv.",
+)
+@click.option(
+    "--python",
+    "base_python",
+    default=sys.executable,
+    show_default=True,
+    help="Python executable used to create the CL-Bench virtualenv.",
+)
+@click.option(
+    "--task",
+    default="database_exploration",
+    show_default=True,
+    help="CL-Bench task whose one-time artifacts should be downloaded.",
+)
+@click.option(
+    "--skip-install",
+    is_flag=True,
+    help="Reuse an existing CL-Bench virtualenv without reinstalling dependencies.",
+)
+def clbench_setup(root: Path, base_python: str, task: str, skip_install: bool) -> None:
+    """Set up the optional CL-Bench runtime and task data."""
+
+    from .value.clbench import setup_clbench
+
+    try:
+        result = setup_clbench(
+            root,
+            base_python=base_python,
+            task=task,
+            install_dependencies=not skip_install,
+        )
+    except Exception as exc:
+        raise click.ClickException(str(exc)) from exc
+    click.echo(f"CL-Bench ready: {result['root']}")
+    click.echo(f"Python: {result['python']}")
+    click.echo(f"Revision: {result['revision']}")
+
+
+@cli.command(name="clbench-value-run")
+@click.option(
+    "--root",
+    type=click.Path(path_type=Path),
+    default=Path(".cl-bench"),
+    show_default=True,
+)
+@click.option("--python", "clbench_python", type=click.Path(path_type=Path), default=None)
+@click.option("--task", default="database_exploration", show_default=True)
+@click.option("--schedule", default="default", show_default=True)
+@click.option("--variant", default=None)
+@click.option("--model", default="openai/gpt-4.1", show_default=True)
+@click.option("--memory-system", type=click.Choice(list_systems()), default="simple")
+@click.option(
+    "--memory-setup-mode",
+    type=click.Choice(["none", "seeded", "capture_first"]),
+    default="none",
+    show_default=True,
+)
+@click.option("--seed", type=int, default=42, show_default=True)
+@click.option("--max-instances", type=int, default=None)
+@click.option("--memory-prompt-version", default=None)
+@click.option("--seed-memories", type=click.Path(exists=True, path_type=Path), default=None)
+@click.option("--output", type=click.Path(path_type=Path), default=None)
+def clbench_value_run(
+    root: Path,
+    clbench_python: Path | None,
+    task: str,
+    schedule: str | None,
+    variant: str | None,
+    model: str,
+    memory_system: str,
+    memory_setup_mode: str,
+    seed: int,
+    max_instances: int | None,
+    memory_prompt_version: str | None,
+    seed_memories: Path | None,
+    output: Path | None,
+) -> None:
+    """Run CL-Bench after the explicit optional runtime setup."""
+    from .value.clbench import (
+        ClBenchUnavailableError,
+        default_clbench_python,
+        run_clbench_value_benchmark,
+    )
+
+    try:
+        result = run_clbench_value_benchmark(
+            clbench_root=root,
+            clbench_python=str(clbench_python or default_clbench_python(root)),
+            task=task,
+            schedule=schedule,
+            variant=variant,
+            max_instances=max_instances,
+            seed=seed,
+            memory_setup_mode=memory_setup_mode,
+            memory_system=memory_system,
+            memory_prompt_version=memory_prompt_version,
+            seed_memories_path=seed_memories,
+            model=model,
+            output_path=output,
+        )
+    except ClBenchUnavailableError as exc:
+        raise click.ClickException(
+            f"{exc} CL-Bench is optional and is not included in the normal install."
+        ) from exc
+    except Exception as exc:
+        raise click.ClickException(str(exc)) from exc
+
+    if output is None:
+        output = _write_json_without_overwrite(
+            Path("results") / f"clbench_{task}_{memory_setup_mode}.json",
+            result,
+        )
+    click.echo(f"CL-Bench result written to {output}")
+    click.echo(json.dumps(result.get("comparison", {}), indent=2))
 
 
 @cli.command()
@@ -855,7 +979,7 @@ def value_visualize(result_file: str, output: str | None):
 @click.option("--mode", type=click.Choice(["prompt", "tool", "both"]), default="prompt")
 @click.option(
     "--memory-setup-mode",
-    type=click.Choice(["seeded", "capture_first"]),
+    type=click.Choice(["none", "seeded", "capture_first"]),
     default="seeded",
     help="Initialize the memory arm from fixtures or baseline-captured memories.",
 )
@@ -896,7 +1020,7 @@ def value_run(
         output = f"results/value_{ts}_{provider}_{model_short}_{system_name}.json"
     from .value.dataset import load_value_dataset
     from .value.evaluator import evaluate_value_run
-    from .value.runner import run_value_benchmark
+    from .value.simulated_tool_value_runner import run_value_benchmark
 
     config = ValueRunConfig(
         provider=provider,
@@ -1052,7 +1176,7 @@ def value_run(
 @click.option("--memory-system", type=click.Choice(list_systems()), default="simple")
 @click.option(
     "--memory-setup-mode",
-    type=click.Choice(["seeded", "capture_first"]),
+    type=click.Choice(["none", "seeded", "capture_first"]),
     default="capture_first",
     help="Use declared seed memories or hand baseline writes to replay.",
 )
@@ -1141,7 +1265,7 @@ def tau2_value_run(
 @click.option("--memory-system", type=click.Choice(list_systems()), default="simple")
 @click.option(
     "--memory-setup-mode",
-    type=click.Choice(["seeded", "capture_first"]),
+    type=click.Choice(["none", "seeded", "capture_first"]),
     default="capture_first",
     help="Use declared seed memories or hand baseline writes to replay.",
 )
@@ -1219,7 +1343,7 @@ def tau2_container_run(
 @click.option("--judge-model", default="gpt-4o")
 @click.option(
     "--memory-setup-mode",
-    type=click.Choice(["seeded", "capture_first"]),
+    type=click.Choice(["none", "seeded", "capture_first"]),
     default="seeded",
     help="Initialize the memory arm from fixtures or baseline-captured memories.",
 )
@@ -1243,8 +1367,8 @@ def container_value_run(
     api_key_env: str | None,
 ):
     """Run paired value trials through a real containerised integration."""
-    from .bench import RunConfig as BenchRunConfig
-    from .value.container_runner import run_container_value_benchmark
+    from .real_system_container_extraction_runner import RunConfig as BenchRunConfig
+    from .value.real_system_container_value_runner import run_container_value_benchmark
     from .value.dataset import load_value_dataset
     from .value.evaluator import evaluate_value_run
 
@@ -1566,12 +1690,12 @@ def _print_metrics_table(metrics: dict, type_metrics: dict, tokens: dict | None 
 @click.argument("config_path", type=click.Path(exists=True))
 @click.option("--output", type=click.Path(), default=None)
 def bench(config_path: str, output: str | None):
-    """Run a containerised benchmark from a config file.
+    """Run a real-system/containerised benchmark from a config file.
 
     Builds the host image, installs the memory system, drives conversations
     through the real coding agent, and evaluates what got stored.
     """
-    from .bench import RunConfig as BenchRunConfig, run_benchmark as run_bench
+    from .real_system_container_extraction_runner import RunConfig as BenchRunConfig, run_benchmark as run_bench
 
     config = BenchRunConfig.from_yaml(Path(config_path))
 

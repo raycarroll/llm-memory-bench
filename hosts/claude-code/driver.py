@@ -13,7 +13,12 @@ import subprocess
 import sys
 from pathlib import Path
 
-from claude_agent_sdk import query, ClaudeAgentOptions, ResultMessage
+from claude_agent_sdk import (
+    query,
+    ClaudeAgentOptions,
+    ClaudeSDKClient,
+    ResultMessage,
+)
 
 
 def _expand_env(value):
@@ -169,6 +174,136 @@ async def _query_mcp_tools(mcp_servers: dict | None) -> list[dict]:
     return tools_by_server
 
 
+def _read_benchmark_prompt(system_prompt_file: str | None) -> str | None:
+    if not system_prompt_file:
+        return None
+    prompt = Path(system_prompt_file).read_text(encoding="utf-8")
+    if not prompt.strip():
+        raise ValueError(f"system prompt file is empty: {system_prompt_file}")
+    return prompt
+
+
+def _build_options(
+    *,
+    model: str | None,
+    cwd: str,
+    max_turns: int | None,
+    profile_mode: bool,
+    cli_path: str,
+    mcp_servers: dict | None,
+    benchmark_prompt: str | None,
+    system_prompt_mode: str,
+    response_schema: dict | None,
+    resume: str | None = None,
+) -> ClaudeAgentOptions:
+    option_values = {
+        "resume": resume,
+        "permission_mode": "dontAsk" if profile_mode else "auto",
+        "model": model,
+        "cwd": cwd,
+        "max_turns": max_turns,
+        "cli_path": cli_path,
+    }
+    if benchmark_prompt:
+        if system_prompt_mode == "append":
+            option_values["system_prompt"] = {
+                "type": "preset",
+                "preset": "claude_code",
+                "append": benchmark_prompt,
+                "snapshot": False,
+            }
+        elif system_prompt_mode == "replace":
+            option_values["system_prompt"] = {
+                "type": "custom",
+                "prompt": benchmark_prompt,
+                "snapshot": False,
+            }
+        else:
+            raise ValueError("system_prompt_mode must be 'append' or 'replace'")
+    if response_schema is not None:
+        option_values["output_format"] = {
+            "type": "json_schema",
+            "schema": response_schema,
+        }
+    if profile_mode:
+        allowed_tool_patterns = [
+            f"mcp__{server_name}__*" for server_name in (mcp_servers or {})
+        ] or ["mcp__memoryhub__*"]
+        option_values.update({
+            "setting_sources": ["project", "user"],
+            "mcp_servers": mcp_servers if mcp_servers else None,
+            "strict_mcp_config": bool(mcp_servers),
+            "include_hook_events": True,
+            "allowed_tools": allowed_tool_patterns,
+        })
+    return ClaudeAgentOptions(**option_values)
+
+
+async def _collect_response(messages, event_path: Path | None, event_offset: int,
+                            capture_hook_output: bool) -> dict:
+    result_text = ""
+    structured_output = None
+    subtype = None
+    session_id = None
+    usage = {}
+    tool_calls = []
+    tool_results = []
+    sdk_integration_events = []
+    async for message in messages:
+        if message.__class__.__name__ in ("AssistantMessage", "UserMessage"):
+            content = _field(message, "content", []) or []
+            for block in content:
+                block_class = block.__class__.__name__
+                if block_class not in ("TextBlock", "ThinkingBlock"):
+                    print(f"DEBUG: Found block type: {block_class}", file=sys.stderr)
+                if block_class == "ToolUseBlock":
+                    tool_name = _field(block, "name", "unknown")
+                    print(f"DEBUG: Capturing tool call: {tool_name}", file=sys.stderr)
+                    tool_calls.append({
+                        "id": _field(block, "id"),
+                        "name": tool_name,
+                        "arguments": _field(block, "input", {}) or {},
+                    })
+                elif block_class == "ToolResultBlock":
+                    raw_content = _field(block, "content", []) or []
+                    if isinstance(raw_content, list):
+                        content_text = [
+                            _field(item, "text", str(item))
+                            if not isinstance(item, dict)
+                            else item.get("text", str(item))
+                            for item in raw_content
+                        ]
+                    else:
+                        content_text = [str(raw_content)]
+                    tool_results.append({
+                        "tool_use_id": _field(block, "tool_use_id"),
+                        "is_error": bool(_field(block, "is_error", False)),
+                        "content": [str(item)[:2000] for item in content_text],
+                    })
+        hook_event = _sdk_hook_event(message, capture_output=capture_hook_output)
+        if hook_event is not None:
+            sdk_integration_events.append(hook_event)
+        if isinstance(message, ResultMessage):
+            session_id = message.session_id
+            subtype = message.subtype
+            raw_usage = getattr(message, "usage", None)
+            if isinstance(raw_usage, dict):
+                usage = raw_usage
+            if message.subtype == "success":
+                result_text = str(message.result or "")
+                structured_output = getattr(message, "structured_output", None)
+    return {
+        "response": result_text[:2000],
+        "structured_output": structured_output,
+        "session_id": session_id,
+        "subtype": subtype,
+        "usage": usage,
+        "tool_calls": tool_calls,
+        "tool_results": tool_results,
+        "integration_events": sdk_integration_events + _read_events(event_path, event_offset),
+    }
+
+
 async def feed_conversation(
     turns: list[dict],
     model: str | None = None,
@@ -187,131 +322,39 @@ async def feed_conversation(
     cli_path = _configured_cli_path()
     runtime = _cli_metadata(cli_path)
     available_tools = await _query_mcp_tools(mcp_servers)
-    benchmark_prompt = None
-    if system_prompt_file:
-        benchmark_prompt = Path(system_prompt_file).read_text(encoding="utf-8")
-        if not benchmark_prompt.strip():
-            raise ValueError(f"system prompt file is empty: {system_prompt_file}")
+    benchmark_prompt = _read_benchmark_prompt(system_prompt_file)
 
     for i, turn in enumerate(turns):
         if turn["role"] != "user":
             continue
 
-        option_values = {
-            "resume": session_id,
-            "permission_mode": "dontAsk" if profile_mode else "auto",
-            "model": model,
-            "cwd": cwd,
-            "max_turns": max_turns,
-            # Use the explicitly installed Claude Code binary instead of the
-            # SDK's bundled default so the benchmarked runtime is versioned by
-            # CLAUDE_CODE_VERSION in the image.
-            "cli_path": cli_path,
-        }
-        if benchmark_prompt:
-            if system_prompt_mode == "append":
-                option_values["system_prompt"] = {
-                    "type": "preset",
-                    "preset": "claude_code",
-                    "append": benchmark_prompt,
-                    # Rebuild the prompt for each request so resumed benchmark
-                    # sessions cannot retain an older prompt snapshot.
-                    "snapshot": False,
-                }
-            elif system_prompt_mode == "replace":
-                option_values["system_prompt"] = {
-                    "type": "custom",
-                    "prompt": benchmark_prompt,
-                    "snapshot": False,
-                }
-            else:
-                raise ValueError(
-                    "system_prompt_mode must be 'append' or 'replace'"
-                )
-        if profile_mode:
-            # Determine allowed tools based on MCP servers
-            allowed_tool_patterns = []
-            if mcp_servers:
-                for server_name in mcp_servers.keys():
-                    # Allow all tools from configured MCP servers
-                    # Pattern must be mcp__<server>__* - bare wildcards not supported
-                    allowed_tool_patterns.append(f"mcp__{server_name}__*")
-            # Fallback for legacy memoryhub configs
-            if not allowed_tool_patterns:
-                allowed_tool_patterns = ["mcp__memoryhub__*"]
-
-            option_values.update({
-                # Load both project and user settings to allow user-level MCP registrations
-                # (e.g., Hindsight installed via their npm package)
-                "setting_sources": ["project", "user"],
-                # Pass the materialized MCP map explicitly and reject ambient
-                # MCP servers so a benchmark cannot inherit the operator's setup.
-                # If no .mcp.json exists, don't set mcp_servers to allow user-level registrations
-                "mcp_servers": mcp_servers if mcp_servers else None,
-                "strict_mcp_config": bool(mcp_servers),  # Only strict if we have explicit config
-                # Observe the installed integration externally through the SDK
-                # stream; do not modify or wrap the integration hook script.
-                "include_hook_events": True,
-                # A headless benchmark cannot answer Claude's interactive
-                # permission prompt. Allow only tools exposed by configured
-                # MCP servers; dontAsk denies unrelated tools instead of
-                # hanging or silently bypassing policy.
-                "allowed_tools": allowed_tool_patterns,
-            })
-
-        options = ClaudeAgentOptions(**option_values)
-
-        result_text = ""
-        subtype = None
-        usage = {}
-        tool_calls = []
-        sdk_integration_events = []
+        response_schema = turn.get("response_schema")
+        options = _build_options(
+            model=model,
+            cwd=cwd,
+            max_turns=max_turns,
+            profile_mode=profile_mode,
+            cli_path=cli_path,
+            mcp_servers=mcp_servers,
+            benchmark_prompt=benchmark_prompt,
+            system_prompt_mode=system_prompt_mode,
+            response_schema=response_schema,
+            resume=session_id,
+        )
         event_offset = _event_offset(event_path)
         try:
-            async for message in query(prompt=turn["content"], options=options):
-                # AssistantMessage content includes the actual MCP/tool-use
-                # blocks emitted while Claude is working. ResultMessage only
-                # contains the final text, so collect calls from the stream.
-                if message.__class__.__name__ == "AssistantMessage":
-                    content = _field(message, "content", []) or []
-                    for block in content:
-                        # SDK returns ToolUseBlock objects, not dicts with type field
-                        block_class = block.__class__.__name__
-                        # Debug: log all block types to stderr
-                        if block_class not in ("TextBlock", "ThinkingBlock"):
-                            print(f"DEBUG: Found block type: {block_class}", file=sys.stderr)
-                        if block_class == "ToolUseBlock":
-                            tool_name = _field(block, "name", "unknown")
-                            print(f"DEBUG: Capturing tool call: {tool_name}", file=sys.stderr)
-                            tool_calls.append({
-                                "id": _field(block, "id"),
-                                "name": tool_name,
-                                "arguments": _field(block, "input", {}) or {},
-                            })
-                hook_event = _sdk_hook_event(message, capture_output=capture_hook_output)
-                if hook_event is not None:
-                    sdk_integration_events.append(hook_event)
-                if isinstance(message, ResultMessage):
-                    session_id = message.session_id
-                    subtype = message.subtype
-                    raw_usage = getattr(message, "usage", None)
-                    if isinstance(raw_usage, dict):
-                        usage = raw_usage
-                    if message.subtype == "success":
-                        result_text = message.result
+            response = await _collect_response(
+                query(prompt=turn["content"], options=options),
+                event_path,
+                event_offset,
+                capture_hook_output,
+            )
         except Exception as e:
             responses.append({"turn": i, "error": str(e)[:500]})
             continue
 
-        responses.append({
-            "turn": i,
-            "response": result_text[:2000],
-            "session_id": session_id,
-            "subtype": subtype,
-            "usage": usage,
-            "tool_calls": tool_calls,
-            "integration_events": sdk_integration_events + _read_events(event_path, event_offset),
-        })
+        session_id = response.get("session_id") or session_id
+        responses.append({"turn": i, **response})
 
     return {
         "turns_processed": len(responses),
@@ -327,11 +370,98 @@ async def feed_conversation(
     }
 
 
+async def serve(
+    *,
+    model: str | None = None,
+    cwd: str = "/workspace",
+    max_turns: int | None = None,
+    profile_mode: bool = False,
+    initial_session_id: str | None = None,
+    system_prompt_file: str | None = None,
+    system_prompt_mode: str = "append",
+) -> None:
+    """Serve requests over stdin while retaining one Claude SDK client.
+
+    Each JSON line is either ``{"prompt": ..., "response_schema": ...}``,
+    ``{"reset": true}``, or ``{"shutdown": true}``. Reset reconnects the
+    client once between benchmark questions; normal actions reuse the same
+    Claude/MCP process and session.
+    """
+
+    mcp_servers = _load_project_mcp(cwd) if profile_mode else None
+    benchmark_prompt = _read_benchmark_prompt(system_prompt_file)
+    cli_path = _configured_cli_path()
+    capture_hook_output = _capture_hook_output()
+    event_path = _event_path()
+    client = None
+    schema_key = None
+    first_session_id = initial_session_id
+
+    async def close_client() -> None:
+        nonlocal client, schema_key, first_session_id
+        if client is not None:
+            await client.disconnect()
+        client = None
+        schema_key = None
+        first_session_id = None
+
+    async def open_client(response_schema: dict | None) -> None:
+        nonlocal client, schema_key, first_session_id
+        options = _build_options(
+            model=model,
+            cwd=cwd,
+            max_turns=max_turns,
+            profile_mode=profile_mode,
+            cli_path=cli_path,
+            mcp_servers=mcp_servers,
+            benchmark_prompt=benchmark_prompt,
+            system_prompt_mode=system_prompt_mode,
+            response_schema=response_schema,
+            resume=first_session_id,
+        )
+        client = ClaudeSDKClient(options)
+        await client.connect()
+        schema_key = json.dumps(response_schema, sort_keys=True, default=str)
+        first_session_id = None
+
+    try:
+        for raw_line in sys.stdin:
+            if not raw_line.strip():
+                continue
+            request = json.loads(raw_line)
+            if request.get("shutdown"):
+                break
+            if request.get("reset"):
+                await close_client()
+                print(json.dumps({"ok": True, "reset": True}), flush=True)
+                continue
+
+            response_schema = request.get("response_schema")
+            requested_schema_key = json.dumps(
+                response_schema, sort_keys=True, default=str
+            )
+            if client is None or schema_key != requested_schema_key:
+                await close_client()
+                await open_client(response_schema)
+            event_offset = _event_offset(event_path)
+            await client.query(request["prompt"])
+            response = await _collect_response(
+                client.receive_response(),
+                event_path,
+                event_offset,
+                capture_hook_output,
+            )
+            print(json.dumps(response, default=str), flush=True)
+    finally:
+        await close_client()
+
+
 def main():
     parser = argparse.ArgumentParser()
     group = parser.add_mutually_exclusive_group(required=True)
     group.add_argument("--turns", help="JSON array of turns (inline)")
     group.add_argument("--turns-file", help="Path to JSON file with turns")
+    group.add_argument("--serve", action="store_true", help="Serve persistent requests over stdin")
     parser.add_argument("--model", help="Model to use (e.g. claude-sonnet-4-20250514)")
     parser.add_argument("--cwd", default="/workspace", help="Working directory")
     parser.add_argument("--max-turns", type=int, default=None, help="Max agent turns per user message")
@@ -352,6 +482,22 @@ def main():
         help="How to apply --system-prompt-file (default: append)",
     )
     args = parser.parse_args()
+
+    if args.serve:
+        try:
+            asyncio.run(serve(
+                model=args.model,
+                cwd=args.cwd,
+                max_turns=args.max_turns,
+                profile_mode=args.profile_mode,
+                initial_session_id=args.resume,
+                system_prompt_file=args.system_prompt_file,
+                system_prompt_mode=args.system_prompt_mode,
+            ))
+        except Exception as exc:
+            print(json.dumps({"error": f"{type(exc).__name__}: {exc}"}), flush=True)
+            raise
+        return
 
     if args.turns_file:
         with open(args.turns_file) as f:

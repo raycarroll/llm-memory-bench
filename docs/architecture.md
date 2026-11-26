@@ -41,25 +41,25 @@ There are two orthogonal axes: **what** you're measuring (benchmark) and **how**
 
 | Mode | Currently supports | How it works | What it tests | Trade-off |
 |------|-----------|-------------|--------------|-----------|
-| **API-level** (`run`, `value-run`) | Extraction ✅<br>Value ✅ | Benchmark provides system prompts and tool schemas via Python adapters. Direct LLM API calls. Tool calls are intercepted and recorded, not executed. Success responses are simulated. | Can the LLM correctly use these memory tools? (prompt design, model capability) | Fast iteration, provider-agnostic, no containers required |
-| **Containerised** (`bench`) | Extraction ✅<br>Value ⚠️ (not yet implemented) | Real coding agent (Claude Code) with real memory system (gbrain MCP) installed inside Docker. Agent makes actual tool calls, data is stored for real, then queried afterward. | Does the full agent + memory system stack work together? (integration, real prompts, actual storage) | Slow, Docker required, tests complete deployed stack |
+| **Simulated-tool** (`run`, `value-run`) | Extraction ✅<br>Value ✅ | Benchmark provides system prompts and tool schemas via Python adapters. Direct provider calls. Tool calls are intercepted and recorded, not executed. Success responses are simulated. | Can the LLM correctly use these memory tools? (prompt design, model capability) | Fast iteration, provider-agnostic, no containers required |
+| **Real-system/containerised** (`bench`, `container-value-run`) | Extraction ✅<br>Value ✅ | Real coding agent (Claude Code) with a real memory system installed inside Docker. The agent makes actual tool calls, data is stored for real, then queried afterward. | Does the full agent + memory system stack work together? (integration, real prompts, actual storage) | Slow, Docker required, tests complete deployed stack |
 
 **Implementation matrix:**
 
 | | Extraction | Value |
 |---|---|---|
-| **API-level** | ✅ `llm-memory-bench run` | ✅ `llm-memory-bench value-run` |
-| **Containerised** | ✅ `llm-memory-bench bench` | ⚠️ Not implemented (could be added) |
+| **Simulated-tool** | ✅ `llm-memory-bench run` | ✅ `llm-memory-bench value-run` |
+| **Real-system/containerised** | ✅ `llm-memory-bench bench` | ✅ `llm-memory-bench container-value-run` |
 
-**API-level mode** is useful for:
+**Simulated-tool execution** is useful for:
 - Comparing models and prompt designs quickly
 - Isolating LLM capability from integration issues
 - Testing across multiple providers (Anthropic, OpenAI, Vertex)
 
-**Containerised mode** is useful for:
+**Real-system/containerised execution** is useful for:
 - Validating that a real agent + memory system works end-to-end
 - Testing with the agent's complete prompt stack (system prompt, CLAUDE.md, plugins)
-- Catching integration issues that API-level testing misses
+- Catching integration issues that simulated-tool testing misses
 
 ## How this differs from AlpsBench
 
@@ -103,6 +103,206 @@ This project uses [AlpsBench](https://huggingface.co/datasets/Cosineyx/Alpsbench
 | **Value measurement** | Single query (Task 4) | Multi-turn agent-user conversations |
 | **What it answers** | "Can this LLM extract memories?" | "Can this LLM proactively judge when to act, unprompted, in noisy conversation?" |
 
+## Current implementation view
+
+The class layer describes the application objects and simulated-tool adapters. The real-system path is implemented by runner modules and container configuration rather than `MemorySystem` subclasses.
+
+### Class relationships
+
+```mermaid
+classDiagram
+    direction LR
+
+    class RunSpec {
+        +kind: value | tau2 | extraction
+        +execution: api | container
+        +simulated_tool_system: str
+        +provider: str
+        +model: str
+    }
+
+    class RunService {
+        +execute(spec)
+    }
+
+    class Experiment {
+        <<Protocol>>
+        +run(spec, run_id)
+    }
+
+    class ExtractionExperiment
+    class ValueExperiment
+    class Tau2Experiment
+
+    class Dataset {
+        +conversations
+    }
+
+    class Conversation {
+        +turns
+    }
+
+    class Turn {
+        +role
+        +content
+        +ground_truth
+    }
+
+    class GroundTruth {
+        +should_store
+    }
+
+    class ExpectedFact {
+        +fact
+        +type
+    }
+
+    class GroundTruthType {
+        <<enumeration>>
+        per_turn
+        cumulative
+    }
+
+    class ValueDataset {
+        +scenarios
+    }
+
+    class ValueScenario {
+        +task_prompt
+        +memory_bank
+        +outcomes
+        +validators
+    }
+
+    class MemoryEntry
+    class Outcome
+    class ValidatorSpec
+
+    class MemorySystem {
+        <<simulated adapter>>
+        +system_prompt()
+        +tool_definitions()
+        +extract_stored_fact()
+    }
+
+    class LLMProvider {
+        <<abstract>>
+        +generate(...)
+    }
+
+    class Evaluator {
+        <<Protocol>>
+        +evaluate(...)
+    }
+
+    class ExtractionEvaluator
+    class ValueEvaluator
+
+    RunService --> RunSpec
+    RunService --> Experiment
+    Experiment <|.. ExtractionExperiment
+    Experiment <|.. ValueExperiment
+    Experiment <|.. Tau2Experiment
+    Evaluator <|.. ExtractionEvaluator
+    Evaluator <|.. ValueEvaluator
+    Dataset *-- Conversation
+    Conversation *-- Turn
+    Turn *-- GroundTruth
+    GroundTruth *-- ExpectedFact
+    Dataset ..> GroundTruthType : ground_truth_type
+    ValueDataset *-- ValueScenario
+    ValueScenario *-- MemoryEntry
+    ValueScenario *-- Outcome
+    ValueScenario *-- ValidatorSpec
+    RunSpec ..> Dataset : dataset_path
+    RunSpec ..> ValueDataset : dataset_path
+    RunSpec ..> MemorySystem : simulated_tool_system
+    RunSpec ..> LLMProvider : provider + model
+```
+
+### Runtime execution
+
+```mermaid
+flowchart TB
+    SPEC[RunSpec]
+    SERVICE[RunService]
+    EXT[ExtractionExperiment]
+    VAL[ValueExperiment]
+    ED[Extraction dataset]
+    VD[Value dataset + scenarios]
+    SE[Simulated extraction runner]
+    SV[Simulated value runner]
+    RE[Real-system extraction runner]
+    RV[Real-system value runner]
+    CONFIG[Container configuration]
+    LIVE[Claude Code agent + live integration]
+    RR[RunResult]
+    BR[BenchResult]
+    VR[ValueRunResult]
+
+    SPEC --> SERVICE
+    SERVICE --> EXT
+    SERVICE --> VAL
+    EXT -->|load_dataset| ED
+    VAL -->|load_value_dataset| VD
+    EXT -->|api| SE
+    EXT -->|container| RE
+    VAL -->|api| SV
+    VAL -->|container| RV
+    ED --> SE
+    ED --> RE
+    VD --> SV
+    VD --> RV
+    SE --> RR
+    RE --> BR
+    SV --> VR
+    RV --> VR
+    CONFIG --> RE
+    CONFIG --> RV
+    RE --> LIVE
+    RV --> LIVE
+```
+
+### Minimal key
+
+- `RunSpec`: one requested run; `kind` selects the benchmark and `execution` selects the runtime.
+- `RunService`: dispatches the spec to an experiment.
+- `ExtractionExperiment` / `ValueExperiment` / `Tau2Experiment`: benchmark use-case coordinators.
+- `Dataset`: extraction input containing conversations, turns, and ground truth.
+- `GroundTruth`: expected stored facts for a turn or cumulative conversation; `ExpectedFact` is one annotated fact.
+- `ValueDataset`: value input containing scenarios, memory banks, task prompts, outcomes, and validators.
+- `ValueScenario`: one downstream task and its expected memory context and validation rules.
+- `MemorySystem`: simulated-tool adapter only; it does not run a live memory backend.
+- `LLMProvider`: direct provider API adapter used by simulated-tool runs.
+- Simulated runners: intercept tool calls and return simulated results.
+- Real-system runners: drive the agent, live tools, and persistent memory integration.
+- `Container configuration`: selects the host, model, system/profile, environment, dataset, isolation, and lifecycle settings.
+- `RunResult` / `BenchResult` / `ValueRunResult`: benchmark-specific outputs.
+
+`RunSpec` values:
+
+```text
+kind                 value | tau2 | extraction
+execution            api | container
+memory_setup_mode    none | seeded | capture_first
+value_source         dataset | tau2 | clbench
+tau2_domain          airline | retail | telecom | None
+ground_truth_type    per_turn | cumulative
+```
+
+For `value_source=dataset`, `dataset_path` points to a `ValueDataset`. τ² and CL-Bench use their native task/scenario sources instead.
+
+The internal `execution=api` value is the user-facing **simulated-tool** mode. `execution=container` is the **real-system/containerised** mode.
+
+Runner file mapping:
+
+```text
+Simulated extraction runner      simulated_tool_extraction_runner.py
+Simulated value runner           value/simulated_tool_value_runner.py
+Real-system extraction runner    real_system_container_extraction_runner.py
+Real-system value runner         value/real_system_container_value_runner.py
+```
+
 ## System diagram
 
 ```
@@ -115,7 +315,8 @@ This project uses [AlpsBench](https://huggingface.co/datasets/Cosineyx/Alpsbench
   │                  run/value-run              bench                      │
   │                             │              │                          │
   │              ┌──────────────▼──┐    ┌──────▼──────────────────┐       │
-  │              │  API-level path │    │  Containerised path     │       │
+  │              │ Simulated-tool  │    │ Real-system/container   │       │
+  │              │     path        │    │       path              │       │
   │              │                 │    │                         │       │
   │              │  ┌───────────┐  │    │  ┌───────────────────┐  │       │
   │              │  │  Runner   │  │    │  │ Docker container  │  │       │
@@ -154,14 +355,14 @@ These components are used across benchmark modes.
 
 This project has two separate `systems/` directories that serve completely different purposes:
 
-**API-level systems** (`src/llm_memory_bench/systems/`):
+**Simulated-tool systems** (`src/llm_memory_bench/systems/`):
 - Python classes implementing `MemorySystem` base class
 - Provide prompts and tool schemas for LLM API calls
 - No actual storage, no real MCP servers
 - Fast, isolated testing
 - Used by: `run`, `value-run` commands
 
-**Containerised systems** (`systems/` at project root):
+**Real-system/containerised systems** (`systems/` at project root):
 - Bash scripts: `install.sh`, `query.sh`, `cleanup.sh`
 - Install and configure real memory systems
 - Work with actual MCP servers and storage
@@ -171,12 +372,12 @@ This project has two separate `systems/` directories that serve completely diffe
 ```
 project root/
 ├── src/llm_memory_bench/
-│   └── systems/              ← API-level (Python classes)
+│   └── systems/              ← Simulated-tool (Python classes)
 │       ├── base.py
 │       ├── gbrain.py         ← GBrainMemorySystem class
 │       └── simple.py
 │
-└── systems/                  ← Containerised (bash scripts)
+└── systems/                  ← Real-system/containerised (bash scripts)
     ├── gbrain/
     │   ├── install.sh        ← npm install gbrain
     │   └── query.sh          ← gbrain recall --json
@@ -187,9 +388,9 @@ project root/
 - Running `llm-memory-bench run --system gbrain` uses `src/.../systems/gbrain.py`
 - Running `llm-memory-bench bench configs/claude-gbrain.yaml` uses `systems/gbrain/`
 
-### Memory systems (API-level)
+### Memory systems (simulated-tool)
 
-Each API-level memory system is a self-contained unit that bundles everything the LLM needs to use it. This is the central design decision — rather than testing with synthetic prompts, each system faithfully reproduces a real memory system's interface.
+Each simulated-tool memory system is a self-contained unit that bundles everything the LLM needs to use it. This is the central design decision — rather than testing with synthetic prompts, each system faithfully reproduces a real memory system's interface without persisting data.
 
 ```
   MemorySystem (ABC)
@@ -469,7 +670,7 @@ Fact matching uses semantic comparison rather than string matching. The judge LL
 
 ### Key modules
 
-- `runner.py` — replays conversations turn-by-turn, intercepts tool calls, feeds back simulated results
+- `simulated_tool_extraction_runner.py` — replays conversations turn-by-turn, intercepts tool calls, feeds back simulated results
 - `evaluator.py` — runs LLM-as-judge semantic matching between intercepted calls and ground truth
 - `dataset.py` — data model (Conversation, Turn, GroundTruth)
 - `adapters/alpsbench.py` — converts AlpsBench Task 1 to the internal format
@@ -550,7 +751,7 @@ Memories can be injected in three modes:
 
 ### Key modules
 
-- `value/runner.py` — runs paired trials (baseline vs memory-augmented)
+- `value/simulated_tool_value_runner.py` — runs paired trials (baseline vs memory-augmented)
 - `value/evaluator.py` — LLM-as-judge quality scoring against the rubric
 - `value/metrics.py` — token efficiency, turn compression, quality delta
 - `value/dataset.py` — ValueScenario, ValueDataset models
@@ -558,26 +759,26 @@ Memories can be injected in three modes:
 
 ---
 
-## Containerised execution mode
+## Real-system/containerised execution mode
 
-The API-level mode intercepts tool calls at the provider layer — fast iteration, but the LLM never actually uses the memory system. The containerised mode tests the full stack: a real coding agent with a real memory system installed, running inside Docker. There is no tool interception — the agent uses the memory system for real, and we query what was actually stored afterward.
+Simulated-tool execution intercepts tool calls at the provider layer — fast iteration, but the LLM never actually uses the memory system. Real-system/containerised execution tests the full stack: a real coding agent with a real memory system installed, running inside Docker. There is no tool interception — the agent uses the memory system for real, and we query what was actually stored afterward.
 
-**Current implementation:** The containerised mode currently runs the extraction benchmark (comparing stored items against ground truth) through the real agent's complete prompt stack — system prompt, CLAUDE.md, MCP tools, plugins — rather than an isolated API call with a synthetic prompt.
+**Current implementation:** Real-system/containerised execution runs the extraction benchmark (comparing stored items against ground truth) through the real agent's complete prompt stack — system prompt, CLAUDE.md, MCP tools, plugins — rather than an isolated provider call with simulated tools.
 
-Containerised value runs are implemented for the versioned Claude Code +
+Real-system/containerised value runs are implemented for the versioned Claude Code +
 MemoryHub profile through `llm-memory-bench container-value-run`. Each scenario
 gets a baseline container with no memory integration and a separate integrated
 container. The scenario memory bank is seeded into the existing MemoryHub
 service before the integrated trial, then the task is driven through the real
-Claude Agent SDK session. The value evaluator remains shared with API-level
+Claude Agent SDK session. The value evaluator remains shared with simulated-tool
 runs, but the execution path does not use the Python `MemorySystem` adapters.
 
-**Key architectural difference:** Containerised mode does NOT use the `MemorySystem` Python adapters from `src/llm_memory_bench/systems/`. Instead, it uses bash scripts from top-level `systems/` to install, query, and cleanup the real memory system. The `bench.py` orchestrator has no dependency on the `MemorySystem` base class. This separation means adding value support wouldn't require changes to the MemorySystem API.
+**Key architectural difference:** Real-system/containerised execution does NOT use the `MemorySystem` Python adapters from `src/llm_memory_bench/systems/`. Instead, it uses bash scripts from top-level `systems/` to install, query, and cleanup the real memory system. The `real_system_container_extraction_runner.py` orchestrator has no dependency on the `MemorySystem` base class. This separation keeps simulated-tool adapters independent from real integrations.
 
 ### Data flow
 
 ```
-  Config YAML              bench.py orchestrator
+  Config YAML              real_system_container_extraction_runner.py orchestrator
   ┌──────────────────┐     ┌──────────────────────────────────────────────┐
   │ host:             │     │                                              │
   │   name: claude-   │     │  1. Build host image (Dockerfile)            │
@@ -601,7 +802,7 @@ hosts/
     entrypoint.sh       # Runs system installer on container start
     driver.py           # Feeds conversations via claude-agent-sdk query()
 
-systems/                # Top-level — containerised system definitions
+systems/                # Top-level — real-system/containerised definitions
   gbrain/               # ← DIFFERENT from src/llm_memory_bench/systems/gbrain.py
     install.sh          # Bash: npm install + claude mcp add
     cleanup.sh          # Bash: Reset stored data between conversations
@@ -654,7 +855,8 @@ The driver uses the Claude Agent SDK to feed user turns sequentially, resuming t
 
 ### Key modules
 
-- `bench.py` — orchestrator: builds image, starts container, drives conversations, collects results
+- `real_system_container_extraction_runner.py` — extraction orchestrator: builds image, starts container, drives conversations, collects results
+- `value/real_system_container_value_runner.py` — value orchestrator: runs paired real-system trials
 - `hosts/claude-code/driver.py` — feeds turns via the Claude Agent SDK `query()` function
 - `systems/*/install.sh` — installs the memory system inside the container
 - `systems/*/query.sh` — dumps stored memories as JSON
@@ -668,16 +870,17 @@ The driver uses the Claude Agent SDK to feed user turns sequentially, resuming t
 src/llm_memory_bench/
 ├── cli.py                  # Click CLI — all user-facing commands
 ├── config.py               # RunConfig, ValueRunConfig, provider factory
-├── bench.py                # Containerised benchmark orchestrator (Docker + Agent SDK)
+├── real_system_container_extraction_runner.py # Real-system/containerised extraction orchestrator
 │                           # NOTE: Does NOT import from systems/ below
 │
 ├── dataset.py              # Extraction benchmark data model (Conversation, Turn, GroundTruth)
-├── runner.py               # Extraction benchmark runner (conversation replay + tool interception)
+├── simulated_tool_extraction_runner.py # Extraction benchmark runner (conversation replay + tool interception)
 ├── evaluator.py            # Extraction benchmark evaluator (LLM-as-judge fact matching)
 │
-├── systems/                # Memory system definitions (API-level ONLY)
-│                           # Used by: runner.py, evaluator.py, value/runner.py
-│                           # NOT used by: bench.py
+├── systems/                # Memory system definitions (simulated-tool ONLY)
+│                           # Used by: simulated_tool_extraction_runner.py, evaluator.py,
+│                           #        value/simulated_tool_value_runner.py
+│                           # NOT used by: real_system_container_extraction_runner.py
 │   ├── base.py             # MemorySystem ABC
 │   ├── simple.py           # Baseline: add_memory(fact, category)
 │   ├── claude_code.py      # Claude Code: save_memory(name, description, type, body)
@@ -698,7 +901,7 @@ src/llm_memory_bench/
 │
 └── value/                  # Value benchmark
     ├── dataset.py          # ValueScenario, ValueDataset models
-    ├── runner.py           # Paired trial runner (baseline vs memory-augmented)
+    ├── simulated_tool_value_runner.py # Paired trial runner (baseline vs memory-augmented)
     ├── evaluator.py        # LLM-as-judge quality scoring
     └── metrics.py          # Token efficiency, turn compression, quality delta
 ```
@@ -771,7 +974,7 @@ SYSTEMS["my_system"] = MySystem
   └── max_scenarios: int              # Limit scenarios
 ```
 
-### Containerised benchmark (`bench.RunConfig`)
+### Real-system/containerised benchmark (`bench.RunConfig`)
 
 ```
   bench.RunConfig (loaded from YAML)

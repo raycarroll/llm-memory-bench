@@ -5,7 +5,7 @@ from pathlib import Path
 
 import pytest
 
-from llm_memory_bench.bench import RunConfig
+from llm_memory_bench.real_system_container_extraction_runner import RunConfig
 from llm_memory_bench.seeding import (
     MemoryHubSeedAdapter,
     SeedError,

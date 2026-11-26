@@ -10,7 +10,7 @@ import threading
 import time
 from pathlib import Path
 
-from llm_memory_bench.bench import RunConfig as BenchRunConfig
+from llm_memory_bench.real_system_container_extraction_runner import RunConfig as BenchRunConfig
 from llm_memory_bench.application import EvaluationService, RunService
 from llm_memory_bench.application.specs import EvaluationSpec, RunSpec
 from llm_memory_bench.demo import OpenShiftVerifier, clear_memoryhub_project, load_demo_spec
@@ -18,8 +18,9 @@ from llm_memory_bench.demo.driver import (
     MEMORY_PREPARATION_INSTRUCTIONS,
     resolve_memoryhub_key,
 )
-from llm_memory_bench.systems import list_systems
+from llm_memory_bench.systems import list_prompt_versions, list_systems
 from llm_memory_bench.value.dataset import load_value_dataset
+from llm_memory_bench.value.clbench import default_clbench_python
 from llm_memory_bench.value.tau2 import load_tau2_memory_plan
 
 
@@ -35,6 +36,20 @@ def memoryhub_runtime_status() -> dict[str, bool]:
         "endpoint": bool(os.environ.get("MEMORYHUB_URL")),
         "credentials": any(os.environ.get(name) for name in credential_names),
         "sdk": importlib.util.find_spec("memoryhub") is not None,
+    }
+
+
+def clbench_runtime_status(root: Path, python: str | None, task: str) -> dict[str, object]:
+    """Report optional CL-Bench setup without attempting network operations."""
+    resolved_root = root.expanduser().resolve()
+    interpreter = python or default_clbench_python(resolved_root)
+    task_dir = resolved_root / "data" / task
+    return {
+        "root": resolved_root,
+        "python": interpreter,
+        "checkout": (resolved_root / "src" / "interface.py").is_file(),
+        "interpreter_ready": Path(interpreter).is_file(),
+        "task_data": task_dir.is_dir(),
     }
 
 
@@ -118,11 +133,11 @@ def open_tau2_task_picker(
     selection_key: str,
 ) -> None:
     """Open the τ² task selector and details preview as a modal dialog."""
-    st.session_state.setdefault(selection_key, list(task_options))
+    st.session_state.setdefault(selection_key, [])
     dialog_key = f"{selection_key}::dialog"
     st.session_state.setdefault(
         dialog_key,
-        list(st.session_state.get(selection_key, task_options)),
+        list(st.session_state.get(selection_key, [])),
     )
 
     def sync_selection() -> None:
@@ -212,6 +227,9 @@ def result_dataset_path(path: Path) -> str:
         data = json.loads(path.read_text(encoding="utf-8"))
         if "dataset" in data:
             return str(data["dataset"].get("path", ""))
+        spec = data.get("spec", {})
+        if isinstance(spec, dict) and spec.get("dataset_path"):
+            return str(spec["dataset_path"])
         result = data.get("result", {})
         run = result.get("run", {}) if isinstance(result, dict) else {}
         return str(run.get("dataset", {}).get("path", ""))
@@ -379,15 +397,18 @@ def render_app() -> None:
             if family == "value":
                 value_source = st.radio(
                     "Scenario source",
-                    ["harness", "tau2"],
+                    ["harness", "tau2", "clbench"],
                     format_func=lambda item: {
                         "harness": "Harness scenarios",
                         "tau2": "Official τ²-bench",
+                        "clbench": "Continual Learning Bench",
                     }[item],
-                    help="τ²-bench is a value benchmark source, not a separate experiment family.",
+                    help=(
+                        "All sources use the value experiment contract; τ² and CL-Bench "
+                        "retain their native task evaluators."
+                    ),
                 )
-                kind = "tau2" if value_source == "tau2" else "value"
-                if kind == "tau2":
+                if value_source == "tau2":
                     execution_label = st.radio(
                         "Runtime",
                         ["τ² direct", "τ² pinned container"],
@@ -397,20 +418,34 @@ def render_app() -> None:
                     st.caption(
                         "Runs official τ² tasks with matched baseline and memory arms."
                     )
+                elif value_source == "clbench":
+                    execution_label = st.radio(
+                        "Runtime",
+                        ["Native CL-Bench", "Real-system container"],
+                        help=(
+                            "Native runs CL-Bench's provider directly. The container "
+                            "runtime sends the same task lifecycle through the real "
+                            "agent and MCP integration proxy."
+                        ),
+                    )
+                    st.caption(
+                        "Runs the native CL-Bench task lifecycle and evaluator with the "
+                        "selected memory setup."
+                    )
                 else:
                     execution_label = st.radio(
                         "Runtime",
-                        ["Direct API", "Claude Code container"],
+                        ["Simulated-tool", "Real-system container"],
                         help=(
-                            "Claude Code container runs a baseline trial and a separate "
+                            "Real-system container runs a baseline trial and a separate "
                             "trial with the configured memory integration."
                         ),
                     )
             elif family == "extraction":
                 execution_label = st.radio(
                     "Runtime",
-                    ["Direct API", "Containerised agent"],
-                    help="Containerised extraction runs the real agent and memory integration.",
+                    ["Simulated-tool", "Real-system container"],
+                    help="Real-system extraction runs the real agent and memory integration.",
                 )
             else:
                 # The OpenShift demo always uses its paired direct-agent runtime;
@@ -418,9 +453,10 @@ def render_app() -> None:
                 # that has no effect on demo execution.
                 execution_label = "Direct API"
             execution = "container" if execution_label in {
-                "Claude Code container",
-                "Containerised agent",
+                "Real-system container",
+                "Real-system container",
                 "τ² pinned container",
+                "CL-Bench container",
             } else "api"
 
             dataset_path = ""
@@ -437,11 +473,21 @@ def render_app() -> None:
             tau2_max_steps = 20
             tau2_memoryhub_live = False
             tau2_memoryhub_cleanup = True
+            clbench_root = None
+            clbench_python = None
+            clbench_task = "database_exploration"
+            clbench_schedule = "default"
+            clbench_variant = None
+            clbench_seed = 42
+            clbench_max_instances = None
+            clbench_memory_system = "simple"
+            clbench_memory_prompt_version = None
+            clbench_seed_memories_path = None
             provider = "openai"
             model = "gpt-4o"
-            system = "simple"
+            simulated_tool_system = "simple"
             mode = "prompt"
-            memory_setup_mode = "seeded"
+            memory_setup_mode = "none"
             demo_prepare_memory = False
             demo_prepare_max_turns = 60
             user_simulator_provider = None
@@ -456,7 +502,66 @@ def render_app() -> None:
                     "τ²-derived curated airline + retail": "scenarios/tau2-derived/airline-retail.yaml",
                 }
                 dataset_preset = None
-                if kind == "value":
+                if value_source == "clbench":
+                    clbench_root = st.text_input(
+                        "CL-Bench checkout",
+                        value=".cl-bench",
+                        help="Root of the official continual-learning-bench checkout.",
+                    )
+                    clbench_python = st.text_input(
+                        "CL-Bench Python (optional)",
+                        value="",
+                        help="Use the checkout's .venv/bin/python when blank.",
+                    ) or None
+                    clbench_task = st.selectbox(
+                        "CL-Bench task",
+                        ["database_exploration"],
+                        help="The first adapter slice targets database exploration.",
+                    )
+                    clbench_schedule = st.text_input("CL-Bench schedule", value="default") or None
+                    clbench_variant = st.text_input(
+                        "CL-Bench variant (optional)", value=""
+                    ) or None
+                    clbench_max_instances = st.number_input(
+                        "Max task instances (0 = task default)", min_value=0, value=0
+                    )
+                    dataset_path = clbench_root
+                    clbench_status = clbench_runtime_status(
+                        Path(clbench_root), clbench_python, clbench_task
+                    )
+                    if all(
+                        clbench_status[key]
+                        for key in ("checkout", "interpreter_ready", "task_data")
+                    ):
+                        st.success(
+                            "CL-Bench is ready. Setup is complete and will be reused "
+                            "for this and later runs."
+                        )
+                        st.caption(
+                            f"Runtime: `{clbench_status['python']}` · "
+                            f"task data: `{clbench_status['root'] / 'data' / clbench_task}`"
+                        )
+                    else:
+                        missing = [
+                            label
+                            for key, label in (
+                                ("checkout", "checkout"),
+                                ("interpreter_ready", "Python runtime"),
+                                ("task_data", "task data"),
+                            )
+                            if not clbench_status[key]
+                        ]
+                        st.warning(
+                            "Optional CL-Bench is not ready: missing "
+                            + ", ".join(missing)
+                            + ". This run cannot start until setup is complete."
+                        )
+                        st.code("llm-memory-bench clbench-setup", language="bash")
+                        st.caption(
+                            "This is a one-time setup step; it downloads the external "
+                            "runtime and task artifacts. Normal installs do not include it."
+                        )
+                elif kind == "value" and value_source == "harness":
                     dataset_preset = st.selectbox("Dataset example", list(value_datasets))
                     dataset_path = st.text_input(
                         "Dataset path",
@@ -479,7 +584,7 @@ def render_app() -> None:
                         )
                     except Exception as exc:
                         st.warning(f"Goals unavailable: {exc}")
-                elif kind == "tau2":
+                elif value_source == "tau2":
                     tau2_domain = st.selectbox("τ² domain", ["airline", "retail", "telecom"])
                     plan_paths = sorted(
                         str(path)
@@ -500,7 +605,7 @@ def render_app() -> None:
                                 "Official τ² task details are unavailable; showing task IDs only."
                             )
                         selection_key = f"tau2_tasks::{tau2_domain}::{tau2_memory_plan}"
-                        st.session_state.setdefault(selection_key, list(task_options))
+                        st.session_state.setdefault(selection_key, [])
                         tau2_task_ids = [
                             task_id
                             for task_id in st.session_state[selection_key]
@@ -523,7 +628,7 @@ def render_app() -> None:
                     except Exception as exc:
                         task_options = []
                         st.warning(f"Task definitions unavailable: {exc}")
-                else:
+                elif kind == "demo":
                     scenario_root = Path("scenarios/openshift")
                     scenario_files = sorted(path.name for path in scenario_root.glob("*.yaml"))
                     default_scenario = "network-policy.yaml"
@@ -540,8 +645,39 @@ def render_app() -> None:
                         demo_config_path = str(scenario_root / default_scenario)
                         st.warning(f"No OpenShift scenario YAML files found under `{scenario_root}`.")
                     dataset_path = demo_config_path
+                elif kind == "extraction":
+                    extraction_paths = sorted(
+                        str(path)
+                        for path in Path("datasets").rglob("*.yaml")
+                    )
+                    default_dataset = "datasets/test/alpsbench-task1.yaml"
+                    if default_dataset not in extraction_paths and extraction_paths:
+                        default_dataset = extraction_paths[0]
+                    extraction_options = ["Custom path"] + extraction_paths
+                    selected_dataset = st.selectbox(
+                        "Extraction dataset",
+                        extraction_options,
+                        index=(
+                            extraction_options.index(default_dataset)
+                            if default_dataset in extraction_options
+                            else 0
+                        ),
+                        help="Choose a checked-in dataset or enter a custom YAML path.",
+                    )
+                    if selected_dataset == "Custom path":
+                        dataset_path = st.text_input(
+                            "Dataset path",
+                            value="",
+                        )
+                    else:
+                        dataset_path = selected_dataset
             container_config_path = None
-            if execution == "container" and kind in {"value", "extraction"}:
+            container_preview = None
+            if (
+                execution == "container"
+                and kind in {"value", "extraction"}
+                and value_source != "tau2"
+            ):
                 with st.expander("Container", expanded=False):
                     config_paths = sorted(str(path) for path in Path("configs").glob("*.yaml"))
                     default_config = "configs/claude-memoryhub-remote.yaml"
@@ -578,7 +714,7 @@ def render_app() -> None:
                         st.warning(f"Container config unavailable: {exc}")
                     provider = "anthropic"
                     model = container_preview.model if container_preview else "claude-container"
-                    system = container_preview.system_name if container_preview else "container"
+                    simulated_tool_system = "simple"
                     mode = "integration"
                     if kind == "value":
                         user_simulator_provider = st.selectbox(
@@ -593,16 +729,80 @@ def render_app() -> None:
                         judge_model = st.text_input("Outcome judge model", value="gpt-4o")
                     else:
                         st.caption("Container extraction uses the agent and memory system from this config.")
-            elif kind == "value":
+            if value_source == "clbench":
+                with st.expander("CL-Bench model & memory", expanded=True):
+                    if execution == "container" and container_preview is not None:
+                        model = container_preview.model
+                        st.caption(f"Container agent model: `{model}`")
+                    else:
+                        model = st.text_input("Agent model", value="openai/gpt-4.1")
+                    memory_system_options = list_systems()
+                    memory_system_default = (
+                        "memoryhub" if execution == "container" and "memoryhub" in memory_system_options else "simple"
+                    )
+                    clbench_memory_system = st.selectbox(
+                        "Memory integration", memory_system_options,
+                        index=memory_system_options.index(memory_system_default),
+                    )
+                    prompt_versions = list_prompt_versions(clbench_memory_system)
+                    if prompt_versions:
+                        clbench_memory_prompt_version = st.selectbox(
+                            "Memory prompt version",
+                            prompt_versions,
+                            index=0,
+                            format_func=lambda version: (
+                                f"{version} (default)" if version == prompt_versions[0] else version
+                            ),
+                            help=(
+                                "Choices are loaded from the selected memory system's "
+                                "versioned prompt files. The default is defined in that "
+                                "system's metadata.yaml."
+                            ),
+                        )
+                    else:
+                        clbench_memory_prompt_version = None
+                        st.caption(
+                            "The selected memory system has no versioned prompt; "
+                            "its built-in behavior will be used."
+                        )
+                    memory_setup_mode = st.selectbox(
+                        "Memory setup",
+                        ["none", "seeded", "capture_first"],
+                        index=0,
+                        format_func=lambda value: {
+                            "none": "None — no memory control",
+                            "seeded": "Seed declared memories",
+                            "capture_first": "Capture baseline, then replay",
+                        }[value],
+                        help=(
+                            "None is the causal control. Capture-first extracts durable "
+                            "facts during the first CL-Bench run and replays them in a "
+                            "matched second run."
+                        ),
+                    )
+                    if memory_setup_mode == "seeded":
+                        clbench_seed_memories_path = st.text_input(
+                            "Seed memories file",
+                            value="",
+                            help="YAML/JSON list of {fact, category} entries.",
+                        ) or None
+                    clbench_seed = st.number_input("CL-Bench seed", min_value=0, value=42)
+                    st.info(
+                        "The CL-Bench task reward remains authoritative; memory is "
+                        "measured by the paired native run score and gain."
+                    )
+            elif kind == "value" and value_source == "harness":
                 with st.expander("Model & memory", expanded=False):
                     provider = st.selectbox("Provider", ["openai", "anthropic", "litellm", "vertex"])
                     model = st.text_input("Model", value="gpt-4.1")
-                    system = st.selectbox("Memory integration", list_systems())
+                    simulated_tool_system = st.selectbox("Memory integration", list_systems())
                     mode = st.selectbox("Memory delivery", ["prompt", "tool", "both"])
                     memory_setup_mode = st.selectbox(
                         "Memory setup",
-                        ["seeded", "capture_first"],
+                        ["none", "seeded", "capture_first"],
+                        index=0,
                         format_func=lambda value: {
+                            "none": "None — no memory control",
                             "seeded": "Seed declared memories",
                             "capture_first": "Capture baseline, then replay",
                         }[value],
@@ -611,18 +811,20 @@ def render_app() -> None:
                             "hands baseline writes to the memory arm."
                         ),
                     )
-            elif kind == "tau2":
+            elif value_source == "tau2":
                 with st.expander("Models & memory", expanded=False):
                     memory_setup_mode = st.selectbox(
                         "Memory setup",
-                        ["capture_first", "seeded"],
+                        ["none", "capture_first", "seeded"],
+                        index=0,
                         format_func=lambda value: {
+                            "none": "None — no memory control",
                             "seeded": "Seed declared memories",
                             "capture_first": "Capture baseline, then replay",
                         }[value],
                         help=(
-                            "τ² defaults to capture-first because its official task "
-                            "data is simulator context, not agent memory."
+                            "None is the causal control. Capture-first starts empty, "
+                            "captures baseline writes, then replays the captured snapshot."
                         ),
                     )
                     tau2_agent_model = st.text_input("τ² agent model", value="openai/gpt-4.1")
@@ -631,7 +833,7 @@ def render_app() -> None:
                         "Memory backend",
                         ["simple", "memoryhub"],
                         format_func=lambda value: {
-                            "simple": "Harness adapter (deterministic)",
+                            "simple": "Local simulated memory",
                             "memoryhub": "MemoryHub",
                         }[value],
                         key="tau2_memory_system",
@@ -687,7 +889,7 @@ def render_app() -> None:
                 with st.expander("Demo model & memory", expanded=True):
                     provider = st.selectbox("Provider", ["openai", "anthropic", "litellm", "vertex"])
                     model = st.text_input("Model", value="gpt-4o")
-                    system = st.selectbox("Memory system", ["memoryhub"])
+                    simulated_tool_system = st.selectbox("Memory system", ["memoryhub"])
                     mode = st.selectbox("Memory mode", ["both"])
                     demo_prepare_memory = st.checkbox(
                         "Extraction preparation run",
@@ -698,19 +900,18 @@ def render_app() -> None:
                         ),
                     )
                 st.info("The demo runs paired memory and baseline agents against isolated OpenShift namespaces.")
-                provider = "openai"
-                model = tau2_agent_model
-                system = tau2_memory_system
                 mode = "prompt"
-                user_simulator_model = tau2_user_model
             else:
                 with st.expander("Model & memory", expanded=False):
                     if execution == "api":
                         provider = st.selectbox("Provider", ["openai", "anthropic", "litellm", "vertex"])
                         model = st.text_input("Model", value="gpt-4o")
-                        system = st.selectbox("Memory integration", list_systems())
+                        simulated_tool_system = st.selectbox("Memory integration", list_systems())
             with st.expander("Limits & evaluation", expanded=False):
-                max_turns = st.number_input("Max turns", min_value=1, value=30, disabled=kind not in {"value", "demo"})
+                max_turns = st.number_input(
+                    "Max turns", min_value=1, value=30,
+                    disabled=kind not in {"value", "demo"},
+                )
                 demo_prepare_max_turns = st.number_input(
                     "Preparation max turns",
                     min_value=1,
@@ -719,12 +920,19 @@ def render_app() -> None:
                     help="Turn limit for the With Memory preparation run; the comparison uses Max turns.",
                 )
                 max_scenarios = st.number_input(
-                    "Max scenarios (0 = all)", min_value=0, value=1, disabled=kind != "value"
+                    "Max scenarios (0 = all)",
+                    min_value=0,
+                    value=1,
+                    disabled=kind != "value" or value_source in {"tau2", "clbench"},
                 )
                 max_conversations = st.number_input(
                     "Max conversations (0 = all)", min_value=0, value=1, disabled=kind != "extraction"
                 )
-                judge = st.checkbox("Run outcome judge", value=True, disabled=kind != "value")
+                judge = st.checkbox(
+                    "Run outcome judge",
+                    value=True,
+                    disabled=kind != "value" or value_source in {"tau2", "clbench"},
+                )
             action_columns = st.columns(2)
             with action_columns[0]:
                 reset_experiment = st.button(
@@ -790,7 +998,7 @@ def render_app() -> None:
         goal_id=goal_id,
         provider=provider,
         model=model,
-        system=system,
+        system=simulated_tool_system,
         mode=mode,
         memory_setup_mode=memory_setup_mode,
         max_turns=int(max_turns),
@@ -811,6 +1019,21 @@ def render_app() -> None:
         tau2_max_steps=int(tau2_max_steps),
         tau2_memoryhub_live=tau2_memoryhub_live,
         tau2_memoryhub_cleanup=tau2_memoryhub_cleanup,
+        value_source=(
+            "dataset" if value_source in {None, "harness"} else value_source
+        ),
+        clbench_root=clbench_root,
+        clbench_python=clbench_python,
+        clbench_task=clbench_task,
+        clbench_schedule=clbench_schedule,
+        clbench_variant=clbench_variant,
+        clbench_seed=int(clbench_seed),
+        clbench_max_instances=(
+            int(clbench_max_instances) if clbench_max_instances else None
+        ),
+        clbench_memory_system=clbench_memory_system,
+        clbench_memory_prompt_version=clbench_memory_prompt_version,
+        clbench_seed_memories_path=clbench_seed_memories_path,
     )
 
     if reset_experiment and kind == "demo":
@@ -1007,11 +1230,14 @@ def render_app() -> None:
     if payload is not None:
         run_kind = payload.get("spec", {}).get("kind", spec.kind)
         result = payload["result"]
-        if run_kind == "tau2":
+        run_source = payload.get("spec", {}).get("value_source", "dataset")
+        if run_kind == "tau2" or run_source == "tau2":
             st.divider()
             st.subheader("Latest result · comparison view")
             _render_artifact_links(st, payload)
             render_tau2_result(st, result)
+        elif run_source == "clbench":
+            render_clbench_result(st, result)
         elif run_kind == "demo":
             # The OpenShift demo owns its reference-style result view. Do not
             # prepend the generic benchmark artifact/comparison chrome here.
@@ -1586,6 +1812,33 @@ def render_collapsed_tool_calls(st, tool_calls: list[dict]) -> None:
         st.json(tool_calls)
 
 
+def render_clbench_result(st, result: dict) -> None:
+    """Render native CL-Bench scores and the capture/replay handoff."""
+    run = result.get("run", result)
+    comparison = run.get("comparison", {})
+    baseline = comparison.get("baseline_score")
+    memory = comparison.get("memory_score")
+    gain = comparison.get("gain")
+    columns = st.columns(3)
+    columns[0].metric("Baseline score", "—" if baseline is None else f"{baseline:.3f}")
+    columns[1].metric("Memory score", "—" if memory is None else f"{memory:.3f}")
+    columns[2].metric("Memory gain", "—" if gain is None else f"{gain:+.3f}")
+    st.caption(
+        f"{run.get('task', 'CL-Bench')} · schedule={run.get('schedule') or 'default'} · "
+        f"setup={run.get('memory_setup_mode', 'none')}"
+    )
+    captured = run.get("captured_memories", [])
+    if captured:
+        st.markdown("**Captured memories**")
+        for memory_entry in captured:
+            st.markdown(
+                f"- `{memory_entry.get('category', 'general')}` — "
+                f"{memory_entry.get('fact', '')}"
+            )
+    with st.expander("Native CL-Bench results", expanded=False):
+        st.json(run)
+
+
 def render_value_result(st, result: dict, spec: dict) -> None:
     """Render the single-run value comparison workspace."""
     summary = result.get("dataset_summary", {})
@@ -1630,7 +1883,7 @@ def render_value_result(st, result: dict, spec: dict) -> None:
     st.markdown("#### Memory used")
     meta_cols = st.columns(3)
     container = result.get("container", {})
-    backend = container.get("integration_profile") or spec.get("system", "unknown")
+    backend = container.get("integration_profile") or spec.get("simulated_tool_system", "unknown")
     meta_cols[0].metric("Backend", backend.split("/")[-1])
     meta_cols[1].metric("Mode", memory_mode.replace("_", " ").title())
     meta_cols[2].metric("Seeded facts", len(memory_facts))
@@ -1780,7 +2033,7 @@ def render_outcome_evaluation(st, scenario_eval: dict, memory_mode: str) -> None
 
 
 def render_extraction_result(st, result: dict) -> None:
-    """Render API extraction evaluation or container extraction evidence."""
+    """Render extraction run evidence; scoring is saved separately by EVAL."""
     container_summary = result.get("container_summary")
     if container_summary:
         st.markdown("#### Container extraction summary")
@@ -1790,8 +2043,8 @@ def render_extraction_result(st, result: dict) -> None:
         columns[2].metric("Expected facts", container_summary.get("expected_facts", 0))
         columns[3].metric("Hook events", container_summary.get("hook_storage_events", 0))
         st.caption(
-            "Container extraction currently shows observed storage evidence; "
-            "the API path also provides matcher-based precision and recall."
+            "Container extraction currently shows observed storage evidence. "
+            "Run a separate evaluation from the EVAL pane for matcher-based metrics."
         )
         for conversation in result.get("run", {}).get("conversation_results", []):
             with st.expander(conversation.get("conversation_id", "conversation")):
@@ -1807,9 +2060,24 @@ def render_extraction_result(st, result: dict) -> None:
                     st.json(conversation["hook_storage_events"])
         return
 
+    run = result.get("run", {})
+    conversations = run.get("conversation_results", [])
+    tool_calls = sum(
+        len(turn.get("tool_calls", []))
+        for conversation in conversations
+        for turn in conversation.get("turn_results", [])
+    )
+    st.caption(
+        "Benchmark run saved. Use the EVAL pane to score this run and create a "
+        "separate evaluation artifact."
+    )
     st.json({
         "dataset_summary": result.get("dataset_summary", {}),
-        "evaluation": result.get("evaluation", {}),
+        "run_summary": {
+            "conversations": len(conversations),
+            "tool_calls": tool_calls,
+            "total_time_ms": run.get("total_time_ms", 0),
+        },
     })
 
 

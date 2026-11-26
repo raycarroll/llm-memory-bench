@@ -15,25 +15,25 @@ This project uses conversations from [AlpsBench](https://huggingface.co/datasets
 
 **Two execution modes** (how you run them):
 
-- **API-level** (`run`, `value-run`) — Direct LLM API calls with simulated memory tools. The benchmark provides the system prompt and tool schemas (from `src/llm_memory_bench/systems/`), intercepts tool calls, and simulates success responses. Fast iteration, works with any LLM provider. Supports both extraction and value benchmarks.
+- **Simulated-tool** (`run`, `value-run`) — Direct provider calls with simulated memory tools. The benchmark provides the system prompt and tool schemas (from `src/llm_memory_bench/systems/`), intercepts tool calls, and simulates success responses. Fast iteration, works with any LLM provider. Supports both extraction and value benchmarks.
 
-- **Containerised** (`bench`, `container-value-run`) — Real agent + real memory system integration testing. Runs Claude Code (or other agents) with actual memory systems installed via MCP inside Docker. The agent makes real tool calls, data is actually stored, and we query what was saved.
+- **Real-system/containerised** (`bench`, `container-value-run`) — Real agent + real memory system integration testing. Runs Claude Code (or other agents) with actual memory systems installed via MCP inside Docker. The agent makes real tool calls, data is actually stored, and we query what was saved.
 
 **These are orthogonal:** You can run either benchmark (extraction or value) in either mode. The Streamlit UI presents extraction and value as the experiment families, then selects the applicable runtime. τ²-bench appears as a value scenario source.
 
 | | Extraction Benchmark | Value Benchmark |
 |---|---|---|
-| **API-level** | ✅ `run` | ✅ `value-run` |
-| **Containerised** | ✅ `bench` | ✅ `container-value-run` and Streamlit UI |
+| **Simulated-tool** | ✅ `run` | ✅ `value-run` |
+| **Real-system/containerised** | ✅ `bench` | ✅ `container-value-run` and Streamlit UI |
 
-**Key difference:** API-level tests "can the LLM use these tools correctly?" Containerised tests "does the full agent + memory system stack work together?"
+**Key difference:** Simulated-tool tests ask "can the LLM use these tools correctly?" Real-system/containerised tests ask "does the full agent + memory system stack work together?"
 
 ### Execution Mode Comparison (Extraction Benchmark)
 
 ```
-API-Level Mode                          Containerised Mode
+Simulated-tool Mode                      Real-system/containerised Mode
 ─────────────────────────────────────   ─────────────────────────────────────
-runner.py                               bench.py
+simulated_tool_extraction_runner.py    real_system_container_extraction_runner.py
   ↓                                       ↓
 MemorySystem adapter                    Docker container
 (Python class in src/)                  (real agent + real memory system)
@@ -64,7 +64,7 @@ See [docs/architecture.md](docs/architecture.md) for diagrams and detailed desig
 pip install -e .
 ```
 
-Requires Python 3.11+. The containerised benchmark also requires Docker.
+Requires Python 3.11+. The real-system/containerised benchmark also requires Docker.
 
 ### Optional benchmark UI
 
@@ -92,29 +92,29 @@ See [docs/ui-quickstart.md](docs/ui-quickstart.md).
 
 1. **Conceptual:** A product/service that provides memory capabilities (e.g., GBrain MCP server, Claude Code auto-memory, MemoryHub)
 
-2. **API-level adapter:** Python classes in `src/llm_memory_bench/systems/` that bundle:
+2. **Simulated-tool adapter:** Python classes in `src/llm_memory_bench/systems/` that bundle:
    - The actual system prompt a memory system uses
    - The actual tool schemas (MCP format)
    - Logic to extract facts from tool calls
-   - Used by: API-level execution mode (`run`, `value-run`)
+   - Used by: simulated-tool execution (`run`, `value-run`)
 
 3. **Container scripts:** Bash scripts in top-level `systems/` that:
    - Install the real memory system (`install.sh`)
    - Query what was stored (`query.sh`)
    - Reset state between tests (`cleanup.sh`)
-   - Used by: Containerised execution mode (`bench`)
+   - Used by: real-system/containerised execution (`bench`)
 
-**These are completely separate:** API-level adapters are Python classes for fast testing. Container scripts install and query real systems for integration testing.
+**These are completely separate:** Simulated-tool adapters are Python classes for fast testing. Container scripts install and query real systems for integration testing.
 
 ```
 project root/
 ├── src/llm_memory_bench/
-│   └── systems/              ← API-level (Python classes)
+│   └── systems/              ← Simulated-tool (Python classes)
 │       ├── base.py
 │       ├── gbrain.py         ← GBrainMemorySystem class
 │       └── simple.py
 │
-└── systems/                  ← Containerised (bash scripts)
+└── systems/                  ← Real-system/containerised (bash scripts)
     ├── gbrain/
     │   ├── install.sh        ← npm install gbrain
     │   └── query.sh          ← gbrain recall --json
@@ -123,7 +123,7 @@ project root/
 
 ## Quick start
 
-### API-level benchmark
+### Simulated-tool benchmark
 
 ```bash
 # 1. Convert the AlpsBench dataset
@@ -144,18 +144,18 @@ llm-memory-bench evaluate results/run_*.json \
 llm-memory-bench compare results/eval_*.json
 ```
 
-### Containerised benchmark
+### Real-system/containerised benchmark
 
 ```bash
 # Run through real Claude Code + gbrain in Docker
 llm-memory-bench bench configs/claude-gbrain.yaml
 ```
 
-## Memory systems (API-level)
+## Memory systems (simulated-tool)
 
-Each API-level memory system bundles a prompt, tool schemas, and extraction logic inspired by real memory systems. Different prompt designs frame the judgment differently — flat facts vs typed categories vs hierarchical pages — letting you test whether prompt design affects proactive tool-calling quality.
+Each simulated-tool memory system bundles a prompt, tool schemas, and extraction logic inspired by real memory systems. Different prompt designs frame the judgment differently — flat facts vs typed categories vs hierarchical pages — letting you test whether prompt design affects proactive tool-calling quality.
 
-These are Python adapter classes in `src/llm_memory_bench/systems/` used by the API-level execution mode.
+These are Python adapter classes in `src/llm_memory_bench/systems/` used by simulated-tool execution.
 
 ```bash
 llm-memory-bench list-systems
@@ -350,7 +350,7 @@ This isolates the **value of proactive prompt design** separate from model capab
 
 See [docs/prompt-comparison.md](docs/prompt-comparison.md) for detailed workflow and interpretation.
 
-### Containerised mode
+### Real-system/containerised mode
 
 Runs benchmarks through the full stack: a real coding agent (Claude Code) with a real memory system (gbrain, Claude Code auto-memory) installed inside Docker. Instead of intercepting tool calls at the API layer, the agent uses the memory system for real and we query what was stored afterward.
 
@@ -363,7 +363,7 @@ llm-memory-bench bench configs/claude-gbrain.yaml
 
 This builds a Docker image with the host agent pinned to a specific version, installs the memory system via bash scripts from top-level `systems/` directory, feeds conversations through the agent, then queries what was actually stored.
 
-**Note:** Containerised mode does NOT use the Python `MemorySystem` adapters. It installs and queries real memory systems via bash scripts. This is true regardless of which benchmark (extraction or value) runs in the container.
+**Note:** Real-system/containerised mode does NOT use the Python `MemorySystem` adapters. It installs and queries real memory systems via bash scripts. This is true regardless of which benchmark (extraction or value) runs in the container.
 
 #### Versioned full-stack integration profiles
 
@@ -414,7 +414,7 @@ All value runtimes support two memory setup modes:
 The user simulator still receives scenario/task context in both modes. That
 context is not automatically treated as agent memory.
 
-The existing `value-run` command remains API-level and uses simulated memory
+The existing `value-run` command remains simulated-tool execution and uses simulated memory
 adapters. It is not equivalent to `container-value-run`.
 
 For faithful τ² Value experiments, use `tau2-value-run`. It calls the real τ²
@@ -465,7 +465,7 @@ dataset: datasets/converted/task1.jsonl
 max_conversations: 10
 ```
 
-**Project layout for containerised benchmarks:**
+**Project layout for real-system/containerised benchmarks:**
 
 ```
 hosts/
@@ -526,7 +526,7 @@ llm-memory-bench convert --source alpsbench --all-languages
 
 ## Adding a memory system
 
-### Adding an API-level adapter
+### Adding a simulated-tool adapter
 
 Create a new file in `src/llm_memory_bench/systems/` implementing the `MemorySystem` base class:
 
@@ -557,7 +557,7 @@ class MyMemorySystem(MemorySystem):
 
 Then register it in `src/llm_memory_bench/systems/__init__.py`.
 
-### Adding a containerised system
+### Adding a real-system/containerised system
 
 Create a directory in top-level `systems/` with three bash scripts:
 

@@ -12,7 +12,7 @@ TAU2_REF = "c06b07dd7c4d4ec61ba6ff9bcdf0b15dd7ef36d4"
 # Include the harness revision in the default tag. The runner only builds an
 # image when its tag is absent; keeping only the τ² revision would allow an
 # image containing stale harness code to survive source changes.
-HARNESS_IMAGE_REV = "tau2-live-memoryhub-v1"
+HARNESS_IMAGE_REV = "tau2-live-memoryhub-v3-simple-ben-prompt"
 DEFAULT_IMAGE = f"llm-memory-bench-tau2:{TAU2_REF[:12]}-{HARNESS_IMAGE_REV}"
 CONTAINER_ENV_KEYS = (
     "OPENAI_API_KEY",

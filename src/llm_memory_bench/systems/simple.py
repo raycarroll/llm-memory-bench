@@ -83,6 +83,12 @@ class SimpleMemorySystem(MemorySystem):
         """Return system prompt from loaded YAML."""
         return self._prompts["system_prompt"]
 
+    def system_prompt_for_mode(self, mode: str = "default") -> str:
+        """Return the normal or capture-first prompt variant."""
+        if mode == "capture_only" and self._prompts.get("capture_only_system_prompt"):
+            return self._prompts["capture_only_system_prompt"]
+        return self.system_prompt()
+
     def tool_definitions(self) -> list[dict]:
         return [TOOL_DEFINITION]
 

@@ -647,6 +647,21 @@ async def run_value_benchmark(
     for scenario in scenarios:
         scenario_result = ScenarioResult(scenario_id=scenario.id)
 
+        if config.memory_setup_mode == "none":
+            scenario_result.trials["baseline"] = await run_value_trial(
+                scenario=scenario,
+                agent_provider=agent_provider,
+                user_provider=user_provider,
+                memory_system=memory_system,
+                mode="baseline",
+                max_turns=config.max_turns,
+                enable_search=True,
+                completion_provider=completion_provider,
+                initial_memories=[],
+            )
+            run_result.scenario_results.append(scenario_result)
+            continue
+
         if config.memory_setup_mode == "capture_first":
             baseline = await run_value_trial(
                 scenario=scenario,

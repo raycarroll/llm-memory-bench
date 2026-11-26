@@ -11,7 +11,7 @@ from llm_memory_bench.application import (
     ValueExperiment,
 )
 from llm_memory_bench.application.run_service import RunService, _jsonable
-from llm_memory_bench.value.container_runner import _parse_agent_response
+from llm_memory_bench.value.real_system_container_value_runner import _parse_agent_response
 
 
 def test_value_run_spec_maps_to_existing_config():
@@ -19,7 +19,7 @@ def test_value_run_spec_maps_to_existing_config():
         dataset_path="scenarios/test-value.yaml",
         provider="litellm",
         model="test-model",
-        system="simple",
+        simulated_tool_system="simple",
         mode="both",
         max_scenarios=2,
     )
@@ -80,6 +80,35 @@ def test_experiment_implementations_have_distinct_kinds(tmp_path):
     assert ExtractionExperiment().kind == "extraction"
     assert ValueExperiment().kind == "value"
     assert Tau2Experiment(tmp_path).kind == "tau2"
+
+
+def test_extraction_run_persists_run_data_without_evaluation(monkeypatch):
+    class DatasetStub:
+        def summary(self):
+            return {"conversations": 1}
+
+    run_result = object()
+    monkeypatch.setattr(
+        "llm_memory_bench.application.experiments.load_dataset",
+        lambda _path: DatasetStub(),
+    )
+
+    async def fake_run_benchmark(_dataset, _config):
+        return run_result
+
+    monkeypatch.setattr(
+        "llm_memory_bench.application.experiments.run_benchmark",
+        fake_run_benchmark,
+    )
+
+    spec = RunSpec(kind="extraction", dataset_path="datasets/test/alpsbench-task1.yaml")
+    output = asyncio.run(ExtractionExperiment().run(spec, "run-id"))
+
+    assert output.result == {
+        "dataset_summary": {"conversations": 1},
+        "run": run_result,
+    }
+    assert "evaluation" not in output.result
 
 
 def test_run_service_dispatches_to_experiment_implementation(tmp_path, monkeypatch):

@@ -40,8 +40,8 @@ graph TB
     end
 
     subgraph "Execution Engines (SHARED)"
-        API[API-Level Runner]
-        CONT[Container Runner]
+        API[Simulated-tool Runner]
+        CONT[Real-system/container Runner]
     end
 
     subgraph "Backends (SHARED)"
@@ -109,7 +109,7 @@ graph TB
 
 ## Execution Modes
 
-### Mode 1: API-Level (Controlled)
+### Mode 1: Simulated-tool (Controlled)
 
 **Purpose:** Fast iteration, complete token visibility, controlled experiments
 
@@ -151,7 +151,7 @@ sequenceDiagram
 
 ---
 
-### Mode 2: Containerized (Integration)
+### Mode 2: Real-system/containerized (Integration)
 
 **Purpose:** Real-world testing, system isolation, complete environment control
 
@@ -261,7 +261,7 @@ class ResetResult:
 
 
 class MemoryBackend(ABC):
-    """Unified backend interface supporting both API-level and service-level."""
+    """Unified backend interface supporting both simulated-tool and service-level."""
     
     # ===== Metadata =====
     
@@ -294,7 +294,7 @@ class MemoryBackend(ABC):
         """Tool names this backend handles (for filtering tool calls)."""
         pass
     
-    # ===== API-Level Execution =====
+    # ===== Simulated-tool Execution =====
     
     @abstractmethod
     def extract_stored_fact(self, tool_call: ToolCall) -> str:
@@ -302,7 +302,7 @@ class MemoryBackend(ABC):
         pass
     
     def format_tool_result(self, tool_call: ToolCall) -> dict:
-        """Simulated success response for API-level mode."""
+        """Simulated success response for simulated-tool mode."""
         return {"status": "success"}
     
     # ===== Service-Level Execution =====
@@ -334,7 +334,7 @@ class MemoryBackend(ABC):
 **Example implementations:**
 
 ```python
-# backends/simple.py (API-level only)
+# backends/simple.py (simulated-tool only)
 
 class SimpleMemorySystem(MemoryBackend):
     name = "simple"
@@ -375,7 +375,7 @@ class HindsightBackend(MemoryBackend):
     def accepted_tool_names(self) -> set[str]:
         return {"hindsight_retain", "hindsight_recall"}
     
-    # API-level
+    # Simulated-tool
     def extract_stored_fact(self, tool_call: ToolCall) -> str:
         return tool_call.arguments.get("fact", "")
     
@@ -467,7 +467,7 @@ class HindsightBackend(MemoryBackend):
 ### 2. Benchmark Orchestrator
 
 ```python
-# orchestrator/bench.py
+# orchestrator/real_system_container_extraction_runner.py
 
 from dataclasses import dataclass
 from enum import Enum
@@ -754,20 +754,20 @@ class TelemetryCollector:
 
 ---
 
-### 5. API-Level Runner
+### 5. Simulated-tool Runner
 
 ```python
-# orchestrator/api_runner.py
+# orchestrator/simulated_tool_extraction_runner.py
 
-class APILevelRunner:
-    """Execute benchmarks in API-level mode (controlled)."""
+class SimulatedToolRunner:
+    """Execute benchmarks in simulated-tool mode (controlled)."""
     
     def __init__(self, backend: MemoryBackend, telemetry: TelemetryCollector):
         self.backend = backend
         self.telemetry = telemetry
     
     async def run(self, dataset, config: BenchmarkConfig) -> RunResult:
-        """Execute API-level benchmark."""
+        """Execute simulated-tool benchmark."""
         
         # Load provider
         provider = get_provider(config.provider_name, config.model)
@@ -888,13 +888,13 @@ class APILevelRunner:
 ### 6. Container Runner
 
 ```python
-# orchestrator/container_runner.py
+# orchestrator/real_system_container_value_runner.py
 
 import subprocess
 from pathlib import Path
 
 class ContainerRunner:
-    """Execute benchmarks in containerized mode (integration)."""
+    """Execute benchmarks in real-system/containerized mode (integration)."""
     
     def __init__(
         self,
@@ -909,7 +909,7 @@ class ContainerRunner:
         self.telemetry = telemetry
     
     async def run(self, dataset, config: BenchmarkConfig) -> RunResult:
-        """Execute containerized benchmark."""
+        """Execute real-system/containerized benchmark."""
         
         # Build container image
         image_id = self._build_image()
@@ -1038,11 +1038,11 @@ llm_memory_bench/
 ├── src/llm_memory_bench/
 │   ├── orchestrator/              # NEW: Unified orchestration
 │   │   ├── __init__.py
-│   │   ├── bench.py              # BenchmarkOrchestrator
+│   │   ├── real_system_container_extraction_runner.py # BenchmarkOrchestrator
 │   │   ├── lifecycle.py          # Lifecycle state machine
 │   │   ├── telemetry.py          # Event collection
-│   │   ├── api_runner.py         # API-level execution
-│   │   └── container_runner.py   # Container execution
+│   │   ├── simulated_tool_extraction_runner.py # Simulated-tool extraction
+│   │   └── real_system_container_value_runner.py       # Real-system/container value execution
 │   │
 │   ├── backends/                  # REFACTORED: Unified interface
 │   │   ├── __init__.py
@@ -1061,12 +1061,12 @@ llm_memory_bench/
 │   │   └── vertex.py
 │   │
 │   ├── extraction/                # EXISTING: Extraction benchmark
-│   │   ├── runner.py             # Keep for backward compat (delegate to orchestrator)
+│   │   ├── simulated_tool_extraction_runner.py # Keep for backward compat
 │   │   ├── evaluator.py          # Semantic matching, LLM-as-judge
 │   │   └── dataset.py            # AlpsBench data model
 │   │
 │   ├── value/                     # EXISTING: Value benchmarks
-│   │   ├── runner.py             # Synthetic scenarios
+│   │   ├── simulated_tool_value_runner.py # Synthetic scenarios
 │   │   ├── evaluator.py          # Quality rubrics
 │   │   ├── dataset.py            # Scenario generation
 │   │   └── repository/           # NEW: Repository tasks (Pavel's approach)
@@ -1123,7 +1123,7 @@ llm_memory_bench/
    - Update `gbrain.py` to inherit from new base
    - Update `memoryhub.py` to inherit from new base
    - Add `accepted_tool_names()` method to each
-   - Service methods raise `NotImplementedError` (API-level only)
+   - Service methods raise `NotImplementedError` (simulated-tool only)
 
 3. **Add new service-level backends** (Pavel implements)
    - `backends/hindsight.py` with full API + service support
@@ -1137,8 +1137,8 @@ llm_memory_bench/
 
 5. **Testing**
    - All existing extraction tests pass
-   - API-level mode works with migrated backends
-   - New backends work in both API and service modes
+   - Simulated-tool mode works with migrated backends
+   - New backends work in both simulated-tool and service modes
 
 **Deliverables:**
 - ✅ Unified `MemoryBackend` interface
@@ -1155,15 +1155,15 @@ llm_memory_bench/
 **Tasks:**
 
 1. **Create orchestrator components**
-   - `orchestrator/bench.py` with `BenchmarkOrchestrator`
+   - `orchestrator/real_system_container_extraction_runner.py` with `BenchmarkOrchestrator`
    - `orchestrator/lifecycle.py` with `LifecycleManager`
    - `orchestrator/telemetry.py` with `TelemetryCollector`
-   - `orchestrator/api_runner.py` with `APILevelRunner`
-   - `orchestrator/container_runner.py` with `ContainerRunner`
+   - `orchestrator/simulated_tool_extraction_runner.py` with `SimulatedToolRunner`
+   - `orchestrator/real_system_container_value_runner.py` with `ContainerRunner`
 
 2. **Update existing runners to delegate**
-   - `extraction/runner.py` delegates to `APILevelRunner`
-   - `value/runner.py` delegates to `APILevelRunner`
+   - `extraction/simulated_tool_extraction_runner.py` delegates to `SimulatedToolRunner`
+   - `value/simulated_tool_value_runner.py` delegates to `SimulatedToolRunner`
    - Keep old interfaces for backward compatibility
 
 3. **Update CLI**
@@ -1274,7 +1274,7 @@ llm_memory_bench/
 
 3. **Performance benchmarking**
    - Container startup overhead
-   - API-level vs container mode latency
+   - Simulated-tool vs container mode latency
    - Telemetry overhead
 
 4. **Documentation**
@@ -1300,7 +1300,7 @@ llm_memory_bench/
 
 ### 1. Controlled Mode Design (Critical)
 
-**Question:** For API-level / controlled mode, should it be:
+**Question:** For simulated-tool / controlled mode, should it be:
 
 **Option A (Recommended): System-Native**
 - LLM sees vendor-specific prompts and tools
@@ -1525,7 +1525,7 @@ systems/hindsight/
 
 **Old code path (still works):**
 ```python
-# extraction/runner.py
+# extraction/simulated_tool_extraction_runner.py
 from ..config import RunConfig
 from ..dataset import Dataset
 
