@@ -406,12 +406,17 @@ def render_app() -> None:
                             "trial with the configured memory integration."
                         ),
                     )
-            else:
+            elif family == "extraction":
                 execution_label = st.radio(
                     "Runtime",
                     ["Direct API", "Containerised agent"],
                     help="Containerised extraction runs the real agent and memory integration.",
                 )
+            else:
+                # The OpenShift demo always uses its paired direct-agent runtime;
+                # exposing the generic runtime selector here suggested a setting
+                # that has no effect on demo execution.
+                execution_label = "Direct API"
             execution = "container" if execution_label in {
                 "Claude Code container",
                 "Containerised agent",
@@ -519,10 +524,21 @@ def render_app() -> None:
                         task_options = []
                         st.warning(f"Task definitions unavailable: {exc}")
                 else:
-                    demo_config_path = st.text_input(
-                        "Demo configuration",
-                        value="scenarios/openshift/network-policy.yaml",
-                    )
+                    scenario_root = Path("scenarios/openshift")
+                    scenario_files = sorted(path.name for path in scenario_root.glob("*.yaml"))
+                    default_scenario = "network-policy.yaml"
+                    if scenario_files:
+                        if default_scenario not in scenario_files:
+                            default_scenario = scenario_files[0]
+                        selected_scenario = st.selectbox(
+                            "Scenario configuration",
+                            scenario_files,
+                            index=scenario_files.index(default_scenario),
+                        )
+                        demo_config_path = str(scenario_root / selected_scenario)
+                    else:
+                        demo_config_path = str(scenario_root / default_scenario)
+                        st.warning(f"No OpenShift scenario YAML files found under `{scenario_root}`.")
                     dataset_path = demo_config_path
             container_config_path = None
             if execution == "container" and kind in {"value", "extraction"}:
@@ -674,7 +690,7 @@ def render_app() -> None:
                     system = st.selectbox("Memory system", ["memoryhub"])
                     mode = st.selectbox("Memory mode", ["both"])
                     demo_prepare_memory = st.checkbox(
-                        "Prepare memory from With Memory side",
+                        "Extraction preparation run",
                         value=False,
                         help=(
                             "Run the With Memory side first with MemoryHub write access, "
@@ -727,18 +743,42 @@ def render_app() -> None:
             st.caption("Evaluate saved runs independently from benchmark execution.")
             render_evaluation_panel(st)
 
-    # Keep one stable delta root for the live panels across Streamlit reruns.
-    # Recreating this placeholder only inside the run handler lets the
-    # preparation trace survive as a grey ghost when Continue is clicked.
-    live_root = st.empty()
+    # Panel visibility is an explicit lifecycle state. Event history alone is
+    # not sufficient: Reset intentionally leaves an empty history behind.
     continue_requested = st.session_state.pop("continue_demo", False)
-    st.session_state.setdefault("demo_panel_generation", 0)
-    if st.session_state.pop("clear_demo_panels", False):
+    st.session_state.setdefault("demo_panel_phase", "idle")
+    if continue_requested:
+        import streamlit.components.v1 as components
+
+        components.html(
+            """
+            <script>
+            (() => {
+                const scrollTop = () => {
+                    window.parent.scrollTo({ top: 0, left: 0, behavior: "instant" });
+                    const documentElement = window.parent.document.documentElement;
+                    const scrollingElement = window.parent.document.scrollingElement;
+                    if (documentElement) documentElement.scrollTop = 0;
+                    if (scrollingElement) scrollingElement.scrollTop = 0;
+                };
+                scrollTop();
+                window.parent.requestAnimationFrame(scrollTop);
+                window.parent.setTimeout(scrollTop, 100);
+            })();
+            </script>
+            """,
+            height=1,
+        )
+        st.session_state["demo_panel_phase"] = "comparison"
         st.session_state["demo_live_events"] = {"memory": [], "baseline": []}
-        # Use the same root for the replacement run instead of inserting an
-        # empty transition rerun at a different delta location.
-        live_root.empty()
-        continue_requested = True
+    if submit:
+        st.session_state["demo_panel_phase"] = (
+            "preparing" if demo_prepare_memory and not continue_requested else "comparison"
+        )
+        st.session_state["demo_live_events"] = {"memory": [], "baseline": []}
+
+    live_root = st.empty()
+    live_slots: dict[str, Any] = {}
     spec = RunSpec(
         kind=kind,
         execution=execution,
@@ -783,6 +823,8 @@ def render_app() -> None:
                 reset_result = OpenShiftVerifier(demo_spec).reset_fixture()
             st.session_state["demo_live_events"] = {"memory": [], "baseline": []}
             st.session_state.pop("last_run", None)
+            st.session_state["demo_panel_phase"] = "idle"
+            live_root.empty()
             if reset_result.passed:
                 st.success(
                     "Reset verified: both namespaces are in the broken fixture state. "
@@ -849,7 +891,7 @@ def render_app() -> None:
                 unsafe_allow_html=True,
             )
             st.markdown("#### Task prompt")
-            st.markdown(effective_demo.prompt)
+            _wrapped_instructions(effective_demo.prompt)
             st.markdown("#### System prompt")
             _wrapped_instructions(effective_demo.system_prompt or "(none)")
             st.markdown("#### Developer context")
@@ -859,7 +901,7 @@ def render_app() -> None:
                 "is the cluster access boundary."
             )
             st.markdown("#### Runtime rules")
-            st.markdown(
+            _wrapped_instructions(
                 "- The agent may use only the tools exposed for its side.\n"
                 "- Tool calls are made serially; parallel tool calls are disabled.\n"
                 "- The agent must continue until the independent verifier passes.\n"
@@ -882,44 +924,41 @@ def render_app() -> None:
                 "Tool calls are selected automatically by the agent."
             )
 
+    # Keep the live panel tree below the configuration and instruction
+    # expanders. One outer replacement root is reused for both phases; Continue
+    # clears this root before the comparison tree is mounted.
+    if kind == "demo" and st.session_state["demo_panel_phase"] in {
+        "preparing",
+        "comparison",
+    }:
+        with live_root.container():
+            live_panels = st.columns(2)
+            for panel, side in zip(live_panels, ("memory", "baseline")):
+                with panel:
+                    title = "With Memory" if side == "memory" else "Baseline"
+                    color = "#15803d" if side == "memory" else "#b91c1c"
+                    st.markdown(
+                        f'<h3 style="color: {color};">{title}</h3>',
+                        unsafe_allow_html=True,
+                    )
+                    with st.container(height=650, border=True):
+                        live_slots[side] = st.empty()
+                        trace = st.session_state.get("demo_live_events", {}).get(side, [])
+                        render_live_demo_trace(st, live_slots[side], side, trace)
+    else:
+        live_root.empty()
+
     st.subheader("Execution")
-    live_placeholders = []
 
     if submit or continue_requested:
         try:
             with st.spinner("Running benchmark..."):
                 if kind == "demo":
-                    st.session_state["demo_live_events"] = {
-                        "memory": [],
-                        "baseline": [],
-                    }
-                    # Mount the live panels only for the active run. Rendering
-                    # them on every Streamlit rerun created empty duplicate
-                    # panels above the eventual result view.
                     active_live_sides = (
                         ("memory",)
                         if demo_prepare_memory and not continue_requested
                         else ("memory", "baseline")
                     )
-                    panel_generation = st.session_state["demo_panel_generation"]
-                    with live_root.container():
-                        live_panels = st.columns(len(active_live_sides))
-                        for panel, side in zip(live_panels, active_live_sides):
-                            with panel:
-                                title = "With Memory" if side == "memory" else "Baseline"
-                                color = "#15803d" if side == "memory" else "#b91c1c"
-                                st.markdown(
-                                    f'<h3 style="color: {color};">{title}</h3>',
-                                    unsafe_allow_html=True,
-                                )
-                                with st.container(
-                                    height=650,
-                                    border=True,
-                                    key=f"demo-live-panel-{side}-{panel_generation}",
-                                ):
-                                    placeholder = st.empty()
-                                    live_placeholders.append(placeholder)
-                                    render_live_demo_trace(st, placeholder, side, [])
                     event_queue = queue.Queue()
                     events_by_side = {
                         "memory": list(st.session_state["demo_live_events"]["memory"]),
@@ -951,8 +990,8 @@ def render_app() -> None:
                             st.session_state["demo_live_events"][side] = list(
                                 events_by_side[side]
                             )
-                        for placeholder, side in zip(live_placeholders, active_live_sides):
-                            render_live_demo_trace(st, placeholder, side, events_by_side[side])
+                        for side in active_live_sides:
+                            render_live_demo_trace(st, live_slots[side], side, events_by_side[side])
                         time.sleep(0.15)
                     payload = result_holder.get("payload")
                     if payload is None:
@@ -1006,12 +1045,17 @@ def render_app() -> None:
                     if st.button("Continue", type="primary", use_container_width=True):
                         st.session_state["continue_demo"] = True
                         st.session_state.pop("last_run", None)
-                        st.session_state["demo_panel_generation"] += 1
-                        st.session_state["clear_demo_panels"] = True
                         st.session_state["demo_live_events"] = {
                             "memory": [],
                             "baseline": [],
                         }
+                        st.session_state["demo_panel_phase"] = "comparison"
+                        live_root.empty()
+                        # Clear the rendered preparation DOM before the
+                        # rerun; resetting session state alone cannot remove
+                        # the already-mounted Streamlit slot contents.
+                        for live_slot in live_slots.values():
+                            live_slot.empty()
                         st.rerun()
             render_demo_result(st, result)
         elif run_kind == "value":
@@ -1049,29 +1093,91 @@ def _render_artifact_links(st, payload: dict) -> None:
 def render_live_demo_trace(st, target, side: str, trace: list[dict]) -> None:
     """Refresh one fixed-height live panel without replacing its scroll root."""
     with target.container():
-        st.caption(f"{len(trace)} events")
+        st.markdown(
+            """
+            <style>
+            .agent-trace-label {
+                margin: 0.35rem 0 0.2rem;
+                color: rgba(49, 51, 63, 0.62);
+                font-size: 0.72rem;
+                font-weight: 700;
+                letter-spacing: 0.06em;
+                text-transform: uppercase;
+            }
+            .agent-trace-turn-heading {
+                margin: 0.15rem 0 0.45rem;
+                color: #000000;
+                font-size: 0.95rem;
+                font-weight: 800;
+                letter-spacing: 0.02em;
+            }
+            .agent-trace-tools {
+                display: flex;
+                flex-wrap: wrap;
+                gap: 0.3rem;
+                margin: 0.15rem 0 0.4rem;
+            }
+            .agent-trace-tool {
+                display: inline-block;
+                padding: 0.15rem 0.45rem;
+                border: 1px solid rgba(22, 101, 52, 0.24);
+                border-radius: 999px;
+                background: rgba(22, 163, 74, 0.08);
+                color: rgb(22, 101, 52);
+                font-size: 0.78rem;
+                font-family: monospace;
+            }
+            .agent-trace-tool.error {
+                border-color: rgba(185, 28, 28, 0.28);
+                background: rgba(220, 38, 38, 0.08);
+                color: rgb(153, 27, 27);
+            }
+            .agent-trace-verification {
+                margin-top: 0.35rem;
+                padding: 0.35rem 0.55rem;
+                border-left: 3px solid rgb(22, 163, 74);
+                background: rgba(22, 163, 74, 0.07);
+                font-size: 0.85rem;
+            }
+            .agent-trace-verification.failed {
+                border-left-color: rgb(220, 38, 38);
+                background: rgba(220, 38, 38, 0.07);
+            }
+            </style>
+            """,
+            unsafe_allow_html=True,
+        )
+        st.caption(f"{len(trace)} events · live trace")
         prompt_event = next(
             (event for event in trace if event.get("event") == "prompt"),
             None,
         )
         if prompt_event:
             with st.container(border=True):
-                st.markdown("**Prompt**")
+                st.markdown('<div class="agent-trace-label">Task prompt</div>', unsafe_allow_html=True)
                 st.markdown(prompt_event.get("content", ""))
         turns: dict[int, list[dict]] = {}
         current_turn = 0
         for event in trace:
+            if event.get("event") == "prompt":
+                continue
             if event.get("event") == "turn_started":
                 current_turn = int(event.get("turn", current_turn + 1))
             turns.setdefault(current_turn, []).append(event)
         for turn, events in turns.items():
             with st.container(border=True):
-                st.markdown(f"**Turn {turn}**")
+                st.markdown(
+                    f'<div class="agent-trace-turn-heading">Turn {turn}</div>',
+                    unsafe_allow_html=True,
+                )
                 _render_demo_trace_events(st, events, show_turn=False)
 
 
 def _render_demo_trace_events(st, events: list[dict], *, show_turn: bool = True) -> None:
     """Render one turn's events, optionally including its turn marker."""
+    response_rendered = False
+    tools_rendered = False
+    verification_rendered = False
     for event in events:
             kind = event.get("event")
             if kind == "prompt":
@@ -1080,25 +1186,55 @@ def _render_demo_trace_events(st, events: list[dict], *, show_turn: bool = True)
                 if show_turn:
                     st.markdown(f"**Turn {event.get('turn')}** · model is deciding…")
             elif kind == "model_response":
+                if not response_rendered:
+                    st.markdown('<div class="agent-trace-label">Agent response</div>', unsafe_allow_html=True)
+                    response_rendered = True
                 if event.get("content"):
                     st.markdown(event["content"])
                 if event.get("tools"):
-                    st.caption("Requested tools: " + ", ".join(event["tools"]))
+                    requested = "".join(
+                        f'<span class="agent-trace-tool">{html.escape(str(name))}</span>'
+                        for name in event["tools"]
+                    )
+                    st.markdown(
+                        f'<div class="agent-trace-label">Requested tools</div>'
+                        f'<div class="agent-trace-tools">{requested}</div>',
+                        unsafe_allow_html=True,
+                    )
             elif kind == "tool_completed":
                 icon = "❌" if event.get("is_error") else "✅"
-                st.markdown(f"{icon} `{event.get('name')}`")
+                if not tools_rendered:
+                    st.markdown('<div class="agent-trace-label">Tool activity</div>', unsafe_allow_html=True)
+                    tools_rendered = True
+                tool_name = html.escape(str(event.get("name", "unknown")))
+                tool_class = " error" if event.get("is_error") else ""
+                st.markdown(
+                    f'<div class="agent-trace-tools">'
+                    f'<span class="agent-trace-tool{tool_class}">{icon} {tool_name}</span>'
+                    f'</div>',
+                    unsafe_allow_html=True,
+                )
                 result_text = str(event.get("result", ""))
                 with st.expander(f"Tool result · {event.get('name')}", expanded=False):
                     st.code(result_text, language="text")
             elif kind == "verification":
                 check = event.get("check", {})
-                st.caption(
-                    "Independent check · "
-                    f"frontend ready={check.get('frontend_ready')} · "
-                    f"dependency ready={check.get('dependency_ready')} · "
-                    f"passed={check.get('passed')}"
+                if not verification_rendered:
+                    st.markdown('<div class="agent-trace-label">Independent verification</div>', unsafe_allow_html=True)
+                    verification_rendered = True
+                passed = bool(check.get("passed"))
+                status = "PASS" if passed else "CONTINUING"
+                verification_class = "" if passed else " failed"
+                st.markdown(
+                    f'<div class="agent-trace-verification{verification_class}">'
+                    f'<strong>{status}</strong> · '
+                    f'frontend ready={check.get("frontend_ready")} · '
+                    f'dependency ready={check.get("dependency_ready")} · '
+                    f'passed={passed}</div>',
+                    unsafe_allow_html=True,
                 )
             elif kind == "run_error":
+                st.markdown('<div class="agent-trace-label">Run error</div>', unsafe_allow_html=True)
                 st.error(event.get("error", "Agent failed."))
 
 
