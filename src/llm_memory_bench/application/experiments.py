@@ -8,14 +8,18 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Protocol
 
-from ..bench import RunConfig as BenchRunConfig
-from ..bench import run_benchmark as run_container_benchmark
+from ..real_system_container_extraction_runner import RunConfig as BenchRunConfig
+from ..real_system_container_extraction_runner import run_benchmark as run_container_benchmark
 from ..config import RunConfig
 from ..dataset import load_dataset
-from ..runner import run_benchmark
-from ..value.container_runner import run_container_value_benchmark
+from ..simulated_tool_extraction_runner import run_benchmark
+from ..value.real_system_container_value_runner import run_container_value_benchmark
 from ..value.dataset import load_value_dataset
 from ..value.tau2 import load_tau2_memory_plan, run_tau2_value_benchmark
+from ..value.clbench import (
+    default_clbench_python,
+    run_clbench_value_benchmark,
+)
 from .evaluators import Evaluator, ExtractionEvaluator, ValueEvaluator
 from .specs import RunSpec
 
@@ -49,12 +53,10 @@ class ExtractionExperiment:
 
         dataset = load_dataset(spec.dataset())
         run_result = await run_benchmark(dataset, spec.extraction_config())
-        evaluation = await self.evaluator.evaluate(dataset, run_result)
         return ExperimentOutput(
             {
                 "dataset_summary": dataset.summary(),
                 "run": run_result,
-                "evaluation": evaluation,
             }
         )
 
@@ -108,6 +110,80 @@ class ValueExperiment:
         self.evaluator = evaluator or ValueEvaluator()
 
     async def run(self, spec: RunSpec, run_id: str) -> ExperimentOutput:
+        if spec.value_source == "tau2" or spec.kind == "tau2":
+            return await Tau2Experiment().run(spec, run_id)
+        if spec.value_source == "clbench":
+            if not spec.clbench_root:
+                raise ValueError(
+                    "clbench_root is required for CL-Bench value runs"
+                )
+            root = Path(spec.clbench_root).expanduser().resolve()
+            interpreter = spec.clbench_python or default_clbench_python(root)
+            native_output_path = self._clbench_output_path(spec, run_id)
+            if spec.execution == "container":
+                if not spec.container_config_path:
+                    raise ValueError(
+                        "container_config_path is required for CL-Bench container runs"
+                    )
+                from ..value.clbench_container import run_clbench_container_value_benchmark
+
+                container_config = BenchRunConfig.from_yaml(
+                    Path(spec.container_config_path)
+                )
+                request = {
+                    "task": spec.clbench_task,
+                    "schedule": spec.clbench_schedule,
+                    "variant": spec.clbench_variant,
+                    "max_instances": spec.clbench_max_instances,
+                    "seed": spec.clbench_seed,
+                    "memory_setup_mode": spec.memory_setup_mode,
+                    "seed_memories_path": spec.clbench_seed_memories_path,
+                    "memory_system": spec.clbench_memory_system,
+                    "memory_prompt_version": spec.clbench_memory_prompt_version,
+                }
+                result = await asyncio.to_thread(
+                    run_clbench_container_value_benchmark,
+                    clbench_root=root,
+                    request=request,
+                    container_config=container_config,
+                    output_path=native_output_path,
+                )
+                return ExperimentOutput(result, native_output_path)
+            result = await asyncio.to_thread(
+                run_clbench_value_benchmark,
+                clbench_root=root,
+                clbench_python=interpreter,
+                task=spec.clbench_task,
+                schedule=spec.clbench_schedule,
+                variant=spec.clbench_variant,
+                max_instances=spec.clbench_max_instances,
+                seed=spec.clbench_seed,
+                memory_setup_mode=spec.memory_setup_mode,
+                memory_system=spec.clbench_memory_system,
+                memory_prompt_version=spec.clbench_memory_prompt_version,
+                seed_memories_path=(
+                    Path(spec.clbench_seed_memories_path).expanduser()
+                    if spec.clbench_seed_memories_path
+                    else None
+                ),
+                model=spec.model,
+                output_path=native_output_path,
+            )
+            return ExperimentOutput(
+                {
+                    "dataset_summary": {
+                        "harness": "clbench",
+                        "task": spec.clbench_task,
+                        "schedule": spec.clbench_schedule,
+                        "variant": spec.clbench_variant,
+                    },
+                    "run": result,
+                    "evaluation": None,
+                    "evaluation_aggregate": result.get("comparison", {}),
+                },
+                native_output_path,
+            )
+
         dataset = load_value_dataset(spec.dataset())
         if spec.goal_id:
             selected = [
@@ -128,9 +204,14 @@ class ValueExperiment:
 
     @staticmethod
     async def _run_api(dataset: Any, config: Any) -> Any:
-        from ..value.runner import run_value_benchmark
+        from ..value.simulated_tool_value_runner import run_value_benchmark
 
         return await run_value_benchmark(dataset, config)
+
+    @staticmethod
+    def _clbench_output_path(spec: RunSpec, run_id: str) -> Path:
+        del spec
+        return Path("results/ui") / f"{run_id}.clbench.json"
 
     async def _run_container(self, spec: RunSpec, dataset: Any) -> dict[str, Any]:
         if not spec.container_config_path:

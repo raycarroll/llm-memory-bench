@@ -9,7 +9,7 @@ from .dataset import Conversation, Dataset, ExpectedFact, GroundTruthType
 from .matchers.base import FactMatcher, MatchVerdict
 from .matchers.llm import LLMMatcher
 from .providers.base import ToolCall
-from .runner import ConversationResult, RunResult
+from .simulated_tool_extraction_runner import ConversationResult, RunResult
 from .systems import get_system
 from .systems.base import MemorySystem
 

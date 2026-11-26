@@ -22,9 +22,22 @@ class RunSpec(BaseModel):
     goal_id: str | None = None
     provider: str = "openai"
     model: str = "gpt-4o"
-    system: str = "simple"
+    simulated_tool_system: str = "simple"
     mode: str = "prompt"
-    memory_setup_mode: Literal["seeded", "capture_first"] = "seeded"
+    # ``none`` is the causal no-memory control.  It is the default for value
+    # benchmarks so an experiment cannot silently preload or capture memory.
+    memory_setup_mode: Literal["none", "seeded", "capture_first"] = "none"
+    value_source: Literal["dataset", "tau2", "clbench"] = "dataset"
+    clbench_root: str | None = None
+    clbench_python: str | None = None
+    clbench_task: str = "database_exploration"
+    clbench_schedule: str | None = "default"
+    clbench_variant: str | None = None
+    clbench_seed: int = 42
+    clbench_max_instances: int | None = Field(default=None, ge=1)
+    clbench_memory_system: str = "simple"
+    clbench_memory_prompt_version: str | None = None
+    clbench_seed_memories_path: str | None = None
     max_turns: int = Field(default=10, ge=1)
     max_scenarios: int | None = Field(default=None, ge=1)
     max_conversations: int | None = Field(default=None, ge=1)
@@ -53,7 +66,7 @@ class RunSpec(BaseModel):
         return ValueRunConfig(
             provider=self.provider,
             model=self.model,
-            system=self.system,
+            system=self.simulated_tool_system,
             injection_mode=self.mode,
             memory_setup_mode=self.memory_setup_mode,
             max_turns=self.max_turns,
@@ -99,7 +112,7 @@ class RunSpec(BaseModel):
         return RunConfig(
             provider=self.provider,
             model=self.model,
-            system=self.system,
+            system=self.simulated_tool_system,
             max_conversations=self.max_conversations,
             api_key_env=self.api_key_env,
             max_total_tokens=self.max_total_tokens,

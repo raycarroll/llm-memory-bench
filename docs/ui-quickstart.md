@@ -2,7 +2,7 @@
 
 The optional Streamlit UI defines runs using the same configuration model as
 the application service layer. It presents extraction and value as the two
-experiment families, with direct or containerised runtimes where supported.
+experiment families, with simulated-tool or real-system/containerised runtimes where supported.
 τ²-bench is selectable as a value scenario source. UI-launched results are
 written to `results/ui/`.
 
@@ -24,6 +24,13 @@ llm-memory-bench-ui
 The UI is intentionally a thin control layer. Benchmark execution, memory
 systems, providers, and evaluators remain in the existing package so the CLI
 and a future EvalHub adapter can use the same `RunSpec` and `RunService`.
+
+Extraction runs follow the CLI artifact contract: **Run benchmark** writes the
+run data only, while the **EVAL** pane evaluates a saved run and writes a
+separate evaluation artifact under `results/ui/evaluations/`.
+
+The extraction scenario panel lists YAML datasets found under `datasets/` and
+also supports a custom dataset path.
 
 The value benchmark dataset menu includes a curated τ²-derived starter set:
 

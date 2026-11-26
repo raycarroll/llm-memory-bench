@@ -7,7 +7,7 @@ from dataclasses import dataclass, field
 from ..config import RunConfig, get_provider
 from .dataset import Outcome, ValueDataset, ValueScenario, ValidatorSpec
 from .metrics import aggregate_metrics, compute_value_metrics
-from .runner import TrialResult, ValueRunResult
+from .simulated_tool_value_runner import TrialResult, ValueRunResult
 
 
 OUTCOME_JUDGE_PROMPT = """\

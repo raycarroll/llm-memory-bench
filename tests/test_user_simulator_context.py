@@ -1,4 +1,4 @@
-from llm_memory_bench.value.runner import USER_SIMULATOR_PROMPT
+from llm_memory_bench.value.simulated_tool_value_runner import USER_SIMULATOR_PROMPT
 
 
 def test_user_simulator_prompt_has_private_persona_and_fact_context():

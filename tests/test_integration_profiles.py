@@ -14,7 +14,7 @@ from llm_memory_bench.integrations import (
     materialize_profile,
 )
 from llm_memory_bench.integrations.manifest import AssetSpec, PlatformProfile
-from llm_memory_bench.bench import RunConfig, run_benchmark
+from llm_memory_bench.real_system_container_extraction_runner import RunConfig, run_benchmark
 
 
 PROFILE = Path(__file__).parents[1] / "integrations/profiles/memoryhub/remote-http-v1/profile.yaml"
@@ -50,7 +50,10 @@ def test_memoryhub_profile_materializes_full_claude_surface(tmp_path: Path) -> N
     proxy = (tmp_path / ".llm-memory-bench/memoryhub-mcp-proxy.py").read_text()
     assert "_isolation_arguments" in proxy
     assert 'args["scope"] = "project"' in proxy
-    assert json.loads((tmp_path / ".mcp.json").read_text())["mcpServers"]["memoryhub"]["type"] == "stdio"
+    mcp_server = json.loads((tmp_path / ".mcp.json").read_text())["mcpServers"]["memoryhub"]
+    assert mcp_server["type"] == "http"
+    assert "MEMORYHUB_BENCH_PROXY_URL" in mcp_server["url"]
+    assert mcp_server["headers"]["X-LLM-Memory-Bench-Arm"] == "${MEMORYHUB_BENCH_ARM}"
 
     manifest = json.loads(result.effective_manifest.read_text())
     assert manifest["profile"] == "memoryhub-remote-http@1.0.0"

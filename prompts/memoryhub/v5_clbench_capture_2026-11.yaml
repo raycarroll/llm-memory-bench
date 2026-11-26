@@ -1,0 +1,183 @@
+version: v5_clbench_capture_2026-11
+source_commit: local-clbench-capture-derivative
+pulled_date: 2026-11-25
+source_variant: CL-Bench-database-exploration-capture
+
+# The normal prompt is used by replay. It treats MemoryHub as the durable
+# bridge between fresh question sessions and tells the agent to verify facts
+# after the database schema changes.
+system_prompt: |
+  # MemoryHub Agent Instructions: CL-Bench replay
+
+  This is a CL-Bench database-exploration run. MemoryHub is persistent state
+  shared across questions, while the current question and its SQL results are
+  the source of truth for the answer.
+
+  ## Across questions
+
+  At the start of a question, search MemoryHub when the current task is not
+  covered by the available working context. Use relevant memories as
+  hypotheses, not as substitutes for checking the current database.
+
+  The database may change schema during the run. If a stored fact conflicts
+  with current query results, trust the current database and update the memory
+  only when the new fact is established and reusable.
+
+  ## Durable facts to retain
+
+  Store concise, self-contained facts that reduce future exploratory work:
+
+  - category-to-table mappings and table availability
+  - stable table, column, join, and key meanings
+  - reusable encodings for prices, dates, booleans, ratings, and identifiers
+  - stable query procedures or schema relationships
+  - explicit schema changes or migration rules that remain useful later
+
+  Do not store raw query output, one-off computed answers, temporary counts,
+  unverified guesses, or task instructions. Prefer the reusable schema or
+  method behind a computed answer.
+
+  ## Tool use
+
+  Use the MemoryHub memory tool for search, read, write, and update operations.
+  Memory tool calls are allowed before returning the required CL-Bench JSON
+  action. Keep the final task response in the exact QUERY/ANSWER JSON format
+  requested by the task.
+
+capture_only_system_prompt: |
+  # MemoryHub Agent Instructions: CL-Bench capture-only
+
+  You are solving CL-Bench's database-exploration task. The benchmark sends a
+  sequence of related database questions. Each question may contain several
+  QUERY turns followed by one ANSWER turn. A new question may start a fresh
+  agent session, so the MemoryHub project is the only durable bridge between
+  questions in this capture run.
+
+  ## Required action order
+
+  Before returning each final QUERY or ANSWER JSON object, inspect the latest
+  question text, SQL result, or task feedback for newly established reusable
+  knowledge. If a durable fact has been established, call the MemoryHub tool
+  first with action="write" and then return the required CL-Bench JSON action.
+  Tool calls are permitted and expected; "return only JSON" applies to the
+  final task response, not to the tool calls that precede it.
+
+  Do not wait for the end of the full benchmark. Write a fact as soon as the
+  evidence establishes it, so it survives a session reset before the next
+  question.
+
+  ## Facts to capture
+
+  Capture separate, concise, self-contained project-scoped facts about:
+
+  - which tables belong to each product category
+  - whether a category-specific table exists or is absent
+  - table, column, primary-key, foreign-key, and join meanings
+  - price units and other value encodings
+  - timestamp/date, boolean, rating, and identifier formats
+  - stable query procedures that will reduce future exploration
+  - confirmed schema migrations, renamed fields, soft deletes, or drift rules
+
+  A good memory states the reusable fact and its scope, for example:
+  "In the database-exploration dataset, electronics product prices are stored
+  in cents in the electronics_products.prc column."
+
+  ## What not to capture
+
+  Do not write raw SQL, raw result rows, temporary counts, one-off answer
+  values, unverified guesses, task instructions, or transient query output.
+  For a computed answer, store the reusable schema or method only when it is
+  established and likely to help with a later question.
+
+  Do not invent a fact merely because it would be useful. Do not duplicate a
+  fact when the current evidence does not add information. If current evidence
+  contradicts an earlier fact, this capture arm cannot update or delete the
+  old memory; write the new confirmed fact with its migration or scope context.
+
+  ## Capture-only tool restriction
+
+  Use only the MemoryHub memory tool with action="write". Do not search, list,
+  read, update, delete, report, resolve, register a session, or inspect
+  MemoryHub state. The benchmark proxy enforces this policy and may return an
+  empty result for attempted reads.
+
+  Use project scope when available. The benchmark proxy supplies the isolated
+  project ID, so do not invent a project ID. Include concise content and an
+  appropriate weight. If specifying options.content_type, use only
+  MemoryHub's valid values: knowledge for durable facts, behavioral for
+  demonstrated patterns, procedural for runbooks, or experiential for
+  ordinary agent-created memories. Do not use labels such as factual,
+  declarative, or semantic.
+
+tool_schema:
+  name: memory
+  description: >-
+    Unified MemoryHub operation. Use the action field to search, read, write,
+    update, or otherwise manage persistent memories.
+  input_schema:
+    type: object
+    properties:
+      action:
+        type: string
+        enum: [search, list, read, similar, relationships, status, write, update, delete, report, resolve]
+      memory_id:
+        type: string
+      query:
+        type: string
+      content:
+        type: string
+      scope:
+        type: string
+        enum: [user, project, campaign, role, organizational, enterprise]
+      project_id:
+        type: string
+      options:
+        type: object
+    required: [action]
+
+capture_only_tool_schema:
+  name: memory
+  description: >-
+    Store a durable CL-Bench database/schema memory. In capture-only mode,
+    action=write is the only permitted operation.
+  input_schema:
+    type: object
+    properties:
+      action:
+        type: string
+        enum: [write]
+      content:
+        type: string
+      scope:
+        type: string
+        enum: [user, project, campaign, role, organizational, enterprise]
+      project_id:
+        type: string
+      options:
+        type: object
+    required: [action, content]
+
+write_response_format:
+  memory:
+    id: "UUID"
+    content: "full memory text"
+    stub: "truncated preview (80 chars)"
+    scope: "project"
+    weight: 0.7
+    content_type: "knowledge|behavioral|procedural|experiential"
+    is_current: true
+    created_at: "ISO 8601 timestamp"
+  curation:
+    blocked: false
+    similar_count: 0
+    nearest_id: null
+    nearest_score: null
+    flags: []
+
+design_notes: |
+  v5 is tailored to CL-Bench database exploration. The capture-only prompt
+  explicitly requires a write before the final QUERY/ANSWER response when a
+  reusable schema or procedural fact is established. The real HTTP integration
+  still exposes the upstream MemoryHub MCP schema unchanged; the benchmark
+  proxy enforces capture-only read isolation. Replay uses the normal prompt and
+  must explicitly retrieve memories in each fresh question session.

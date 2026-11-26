@@ -5,7 +5,7 @@ import pytest
 from llm_memory_bench.providers.base import ProviderResponse, ToolCall
 from llm_memory_bench.systems import get_system
 from llm_memory_bench.value.dataset import ValueScenario
-from llm_memory_bench.value.runner import run_value_trial
+from llm_memory_bench.value.simulated_tool_value_runner import run_value_trial
 
 
 class FakeProvider:

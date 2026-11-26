@@ -96,7 +96,7 @@ class RunService:
             f"execution={spec.get('execution', '')}",
             f"provider={spec.get('provider', '')}",
             f"model={spec.get('model', '')}",
-            f"system={spec.get('system', '')}",
+            f"system={spec.get('simulated_tool_system', '')}",
             f"dataset={spec.get('dataset_path', '')}",
         ]
         if result.get("run", {}).get("scenario_results") is not None:
@@ -144,4 +144,4 @@ class RunService:
     def _run_id(spec: RunSpec) -> str:
         timestamp = datetime.now(timezone.utc).strftime("%Y%m%d-%H%M%S-%f")
         model = spec.model.replace("/", "-").replace("@", "-")
-        return f"{timestamp}_{spec.kind}_{spec.provider}_{model}_{spec.system}"
+        return f"{timestamp}_{spec.kind}_{spec.provider}_{model}_{spec.simulated_tool_system}"

@@ -11,7 +11,7 @@ from typing import Any
 from ..config import RunConfig, get_provider
 from ..dataset import load_dataset
 from ..providers.base import ToolCall
-from ..runner import ConversationResult, RunResult, TurnResult
+from ..simulated_tool_extraction_runner import ConversationResult, RunResult, TurnResult
 from .evaluators import ExtractionEvaluator
 from .specs import EvaluationSpec
 

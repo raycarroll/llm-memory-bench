@@ -7,12 +7,17 @@ import base64
 from functools import lru_cache
 import os
 import shlex
+import socket
 import subprocess
+import sys
 import tempfile
+import threading
+import time
 import uuid
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from pathlib import Path
+from typing import Any
 
 import yaml
 from rich.console import Console
@@ -181,6 +186,97 @@ class RunConfig:
 
 
 @dataclass
+class MemoryHubProxyProcess:
+    """One shared host-side MCP proxy for a paired benchmark run."""
+
+    process: subprocess.Popen
+    url: str
+    audit_path: Path
+    log_handle: object
+
+    def stop(self) -> None:
+        if self.process.poll() is None:
+            self.process.terminate()
+            try:
+                self.process.wait(timeout=10)
+            except subprocess.TimeoutExpired:
+                self.process.kill()
+                self.process.wait(timeout=10)
+        close = getattr(self.log_handle, "close", None)
+        if close is not None:
+            close()
+
+
+def start_memoryhub_proxy(
+    config: RunConfig,
+    profile: IntegrationProfile,
+) -> MemoryHubProxyProcess:
+    """Start the single request-routed proxy used by both benchmark arms."""
+
+    proxy_source = (
+        profile.path.parent
+        / "assets"
+        / ".llm-memory-bench"
+        / "memoryhub-mcp-proxy.py"
+    )
+    if not proxy_source.is_file():
+        raise RuntimeError(f"MemoryHub proxy asset does not exist: {proxy_source}")
+
+    values = resolved_system_environment(config)
+    upstream_url = values.get("MEMORYHUB_URL") or values.get("MEMORYHUB_SEED_URL")
+    if values.get("MEMORYHUB_SEED_URL"):
+        upstream_url = values["MEMORYHUB_SEED_URL"]
+    if not upstream_url:
+        raise RuntimeError("MemoryHub proxy requires MEMORYHUB_URL or MEMORYHUB_SEED_URL")
+
+    with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as probe:
+        probe.bind(("127.0.0.1", 0))
+        port = int(probe.getsockname()[1])
+
+    audit_handle = tempfile.NamedTemporaryFile(
+        mode="a", encoding="utf-8", prefix="llm-memory-bench-proxy-", suffix=".jsonl", delete=False
+    )
+    log_path = Path(audit_handle.name).with_suffix(".log")
+    log_handle = log_path.open("a", encoding="utf-8")
+    env = os.environ.copy()
+    env.update(
+        {
+            "MEMORYHUB_URL": upstream_url,
+            "MEMORYHUB_API_KEY": values.get("MEMORYHUB_API_KEY", ""),
+            "MEMORYHUB_AUTH_TOKEN": values.get("MEMORYHUB_AUTH_TOKEN", ""),
+            "LLM_MEMORY_BENCH_PROXY_AUDIT": audit_handle.name,
+        }
+    )
+    process = subprocess.Popen(
+        [sys.executable, str(proxy_source), "--http", "--host", "0.0.0.0", "--port", str(port)],
+        env=env,
+        stdout=log_handle,
+        stderr=log_handle,
+        text=True,
+    )
+    audit_handle.close()
+    for _ in range(50):
+        if process.poll() is not None:
+            detail = log_path.read_text(encoding="utf-8")[-2000:]
+            raise RuntimeError(f"MemoryHub proxy exited during startup: {detail}")
+        try:
+            with socket.create_connection(("127.0.0.1", port), timeout=0.2):
+                break
+        except OSError:
+            time.sleep(0.1)
+    else:
+        process.terminate()
+        raise RuntimeError(f"MemoryHub proxy did not start on port {port}")
+
+    return MemoryHubProxyProcess(
+        process=process,
+        url=f"http://host.docker.internal:{port}/mcp",
+        audit_path=Path(audit_handle.name),
+        log_handle=log_handle,
+    )
+
+
+@dataclass
 class ConversationResult:
     conversation_id: str
     stored: list[dict] = field(default_factory=list)  # Extracted memories (final output)
@@ -317,11 +413,14 @@ def materialize_integration(
     profile: IntegrationProfile,
     target: str | Path,
     project_id: str,
+    proxy_url: str | None = None,
 ) -> str:
     platform = config.integration_platform or config.host_name
 
     # Expand env vars needed for materialization (e.g., MCP HTTP URLs)
     context_values = {"project_id": project_id}
+    if proxy_url:
+        context_values["MEMORYHUB_BENCH_PROXY_URL"] = proxy_url
     for key, value in config.system_env.items():
         if value:
             context_values[key] = _resolve_config_env(key, value)
@@ -395,6 +494,9 @@ def start_container(
     profile: IntegrationProfile | None = None,
     project_id: str | None = None,
     legacy_install: bool = True,
+    proxy_arm: str | None = None,
+    proxy_audit_path: str | None = None,
+    proxy_url: str | None = None,
 ) -> str:
     system_dir = PROJECT_ROOT / "systems" / config.system_name
     if profile is None and legacy_install and not system_dir.exists():
@@ -422,6 +524,20 @@ def start_container(
 
     if project_id:
         env_args.extend(["-e", f"MEMORYHUB_PROJECT_ID={project_id}"])
+
+    if profile is not None:
+        # The profile's MCP proxy is the policy boundary for real-backend
+        # capture/replay. Keep the arm explicit and container-local so the
+        # agent cannot accidentally inherit a host-side value.
+        if proxy_arm is not None and proxy_arm not in {"capture", "replay", "normal"}:
+            raise ValueError("proxy_arm must be capture, replay, or normal")
+        env_args.extend(["-e", "MEMORYHUB_BENCH_PROXY=1"])
+        if proxy_url:
+            env_args.extend(["-e", f"MEMORYHUB_BENCH_PROXY_URL={proxy_url}"])
+        if proxy_arm is not None:
+            env_args.extend(["-e", f"MEMORYHUB_BENCH_ARM={proxy_arm}"])
+        if proxy_audit_path:
+            env_args.extend(["-e", f"LLM_MEMORY_BENCH_PROXY_AUDIT={proxy_audit_path}"])
 
     # Hooks, plugins, and bridge scripts use this provider-neutral event sink
     # to report lifecycle/context delivery without putting memory contents or
@@ -545,6 +661,99 @@ def _exec(container_id: str, cmd: list[str], timeout: int = 300) -> subprocess.C
     return result
 
 
+class ContainerDriverWorker:
+    """Persistent Claude Agent SDK worker for one benchmark phase."""
+
+    def __init__(
+        self,
+        *,
+        container_id: str,
+        model: str | None,
+        profile_mode: bool,
+        system_prompt_file: str | None,
+        system_prompt_mode: str,
+    ):
+        command = [
+            _container_runtime(),
+            "exec",
+            "-i",
+            container_id,
+            "python3",
+            "/host-driver/driver.py",
+            "--serve",
+        ]
+        if model:
+            command.extend(["--model", model])
+        if profile_mode:
+            command.append("--profile-mode")
+        if system_prompt_file:
+            command.extend(["--system-prompt-file", system_prompt_file])
+            command.extend(["--system-prompt-mode", system_prompt_mode])
+        self.process = subprocess.Popen(
+            command,
+            stdin=subprocess.PIPE,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            text=True,
+            bufsize=1,
+        )
+        self._lock = threading.Lock()
+        self._stderr_thread = threading.Thread(
+            target=self._forward_stderr,
+            name="clbench-container-driver-stderr",
+            daemon=True,
+        )
+        self._stderr_thread.start()
+
+    def _forward_stderr(self) -> None:
+        if self.process.stderr is None:
+            return
+        for line in self.process.stderr:
+            print(f"[clbench-container-driver] {line.rstrip()}", file=sys.stderr, flush=True)
+
+    def _request(self, payload: dict[str, Any]) -> dict[str, Any]:
+        if self.process.poll() is not None:
+            raise RuntimeError(
+                f"Persistent container driver exited with code {self.process.returncode}"
+            )
+        if self.process.stdin is None or self.process.stdout is None:
+            raise RuntimeError("Persistent container driver pipes are unavailable")
+        with self._lock:
+            self.process.stdin.write(json.dumps(payload) + "\n")
+            self.process.stdin.flush()
+            line = self.process.stdout.readline()
+        if not line:
+            raise RuntimeError("Persistent container driver closed its stdout")
+        response = json.loads(line)
+        if response.get("error"):
+            raise RuntimeError(str(response["error"]))
+        return response
+
+    def respond(self, prompt: str, response_schema: dict[str, Any]) -> dict[str, Any]:
+        return self._request({
+            "prompt": prompt,
+            "response_schema": response_schema,
+        })
+
+    def reset(self) -> None:
+        self._request({"reset": True})
+
+    def close(self) -> None:
+        if self.process.poll() is not None:
+            return
+        try:
+            self._request({"shutdown": True})
+        except (OSError, RuntimeError):
+            pass
+        if self.process.stdin is not None:
+            self.process.stdin.close()
+        try:
+            self.process.wait(timeout=10)
+        except subprocess.TimeoutExpired:
+            self.process.kill()
+            self.process.wait(timeout=10)
+
+
 def install_system(container_id: str) -> None:
     console.print("Installing memory system...", style="dim")
     result = _exec(container_id, ["bash", "/system/install.sh"], timeout=180)
@@ -663,12 +872,17 @@ def drive_conversation(
     session_id: str | None = None,
     system_prompt_file: str | None = None,
     system_prompt_mode: str = "append",
+    response_schema: dict[str, Any] | None = None,
 ) -> str:
     user_turns = [
         {"role": t.role, "content": t.content}
         for t in conversation.turns
         if t.role == "user"
     ]
+    if response_schema is not None and user_turns:
+        # Keep the schema out of the task prompt.  The Claude Agent SDK passes
+        # it through its structured-output channel to the provider/CLI.
+        user_turns[-1]["response_schema"] = response_schema
 
     turns_json = json.dumps(user_turns)
 
@@ -1011,6 +1225,7 @@ def run_benchmark(config: RunConfig) -> BenchResult:
     seed_environment: dict[str, str] = {}
     workspace_tmp: tempfile.TemporaryDirectory[str] | None = None
     effective_profile_hash = None
+    proxy_process: MemoryHubProxyProcess | None = None
     if profile is not None or seed_plan is not None:
         project_id = (
             f"llm-bench-{datetime.now(timezone.utc).strftime('%Y%m%d%H%M%S')}"
@@ -1028,9 +1243,11 @@ def run_benchmark(config: RunConfig) -> BenchResult:
                 "Set require_isolation: false in config to allow cross-conversation bleed."
             )
         validate_integration_environment(config, profile)
+        proxy_process = start_memoryhub_proxy(config, profile)
         workspace_tmp = tempfile.TemporaryDirectory(prefix="llm-bench-integration-")
         effective_profile_hash = materialize_integration(
-            config, profile, workspace_tmp.name, project_id
+            config, profile, workspace_tmp.name, project_id,
+            proxy_url=proxy_process.url,
         )
 
     if seed_plan is not None:
@@ -1059,7 +1276,13 @@ def run_benchmark(config: RunConfig) -> BenchResult:
         # failed build after a successful seed must not leave benchmark data
         # behind.
         build_host_image(config)
-        container_id = start_container(config, profile=profile, project_id=project_id)
+        container_id = start_container(
+            config,
+            profile=profile,
+            project_id=project_id,
+            proxy_arm="normal" if profile is not None else None,
+            proxy_url=proxy_process.url if proxy_process is not None else None,
+        )
         if profile is None:
             install_system(container_id)
         else:
@@ -1093,6 +1316,7 @@ def run_benchmark(config: RunConfig) -> BenchResult:
                 "project_id": project_id,
                 "smoke_test": smoke_test_result,
                 "memory_system": profile.memory_system.get("name") if profile.memory_system else None,
+                "proxy_url": proxy_process.url if proxy_process is not None else None,
             }
             # Override system name with actual memory system name from profile
             if profile.memory_system and "name" in profile.memory_system:
@@ -1229,3 +1453,5 @@ def run_benchmark(config: RunConfig) -> BenchResult:
                 raise RuntimeError(f"Benchmark cleanup failed: {exc}") from exc
         if workspace_tmp is not None:
             workspace_tmp.cleanup()
+        if proxy_process is not None:
+            proxy_process.stop()

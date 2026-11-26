@@ -19,6 +19,9 @@ datasets/converted/*.yaml
 # Run results (large JSON files)
 results/*.json
 
+# Optional external Continual Learning Bench checkout and downloaded artifacts
+.cl-bench/
+
 # Environment
 .env
 .env.*

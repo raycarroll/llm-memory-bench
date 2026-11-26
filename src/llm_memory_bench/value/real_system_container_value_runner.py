@@ -1,6 +1,6 @@
-"""Value benchmark execution through a real containerised agent.
+"""Value benchmark execution through a real-system/containerised agent.
 
-This module deliberately does not reuse the API-level memory adapters.  It
+This module deliberately does not reuse the simulated-tool memory adapters.  It
 supports either a seeded baseline/memory comparison or a capture-first flow
 where an empty integrated baseline is replayed into a fresh memory arm.
 """
@@ -16,7 +16,7 @@ from dataclasses import replace
 from pathlib import Path
 from typing import Any
 
-from ..bench import (
+from ..real_system_container_extraction_runner import (
     RunConfig as BenchRunConfig,
     build_host_image,
     drive_conversation,
@@ -27,6 +27,7 @@ from ..bench import (
     query_integration,
     resolved_system_environment,
     start_container,
+    start_memoryhub_proxy,
     stop_container,
     validate_integration_environment,
 )
@@ -41,7 +42,7 @@ from ..seeding import (
 )
 from .dataset import ValueDataset, ValueScenario
 from .evaluator import validate_outcomes
-from .runner import (
+from .simulated_tool_value_runner import (
     USER_SIMULATOR_PROMPT,
     ScenarioResult,
     TrialResult,
@@ -429,6 +430,29 @@ async def run_container_value_benchmark(
     for scenario in scenarios:
         scenario_result = ScenarioResult(scenario_id=scenario.id)
 
+        if value_config.memory_setup_mode == "none":
+            baseline_container = start_container(
+                _baseline_config(container_config),
+                profile=None,
+                legacy_install=False,
+            )
+            try:
+                scenario_result.trials["baseline"] = await _run_container_trial(
+                    scenario,
+                    _baseline_config(container_config),
+                    baseline_container,
+                    user_provider,
+                    "baseline",
+                    value_config.max_turns,
+                    False,
+                    completion_provider,
+                    initial_memories=[],
+                )
+            finally:
+                stop_container(baseline_container, keep=container_config.keep_container)
+            run_result.scenario_results.append(scenario_result)
+            continue
+
         # Seeded mode preserves the historical baseline: Claude has no
         # integration, while the memory arm receives the scenario fixture.
         if value_config.memory_setup_mode == "seeded":
@@ -459,21 +483,29 @@ async def run_container_value_benchmark(
             # starts it in a fresh empty project. The provider's observed
             # memories become the replay seed for the second arm.
             capture_project_id = _new_project_id(f"{scenario.id}-capture")
+            proxy = None
+            if value_config.memory_setup_mode == "capture_first":
+                proxy = start_memoryhub_proxy(container_config, profile)
             capture_workspace = __import__("tempfile").TemporaryDirectory(
                 prefix="llm-bench-value-capture-"
             )
             capture_container: str | None = None
+            capture_succeeded = False
             try:
                 materialize_integration(
                     container_config,
                     profile,
                     capture_workspace.name,
                     capture_project_id,
+                    proxy_url=proxy.url,
                 )
                 capture_container = start_container(
                     container_config,
                     profile=profile,
                     project_id=capture_project_id,
+                    proxy_arm="capture",
+                    proxy_audit_path="/run/llm-memory-bench/memoryhub-proxy-audit.jsonl",
+                    proxy_url=proxy.url,
                 )
                 install_integration(capture_container, capture_workspace.name, profile)
                 scenario_result.trials["baseline"] = await _run_container_trial(
@@ -519,6 +551,7 @@ async def run_container_value_benchmark(
                 scenario_result.trials["baseline"].memory_events = [
                     {"retention_calls": retention_calls}
                 ] if retention_calls else []
+                capture_succeeded = True
             finally:
                 if capture_container is not None:
                     cleanup_integration(capture_container, profile, capture_project_id)
@@ -527,12 +560,18 @@ async def run_container_value_benchmark(
                         keep=container_config.keep_container,
                     )
                 capture_workspace.cleanup()
+                if not capture_succeeded:
+                    proxy.stop()
+                    proxy = None
             seed_plan = _captured_seed_plan(
                 scenario,
                 profile_provider,
                 scenario_result.trials["baseline"].captured_memories,
             )
             memory_source = "baseline_capture"
+
+        if "proxy" not in locals() or proxy is None:
+            proxy = start_memoryhub_proxy(container_config, profile)
 
         project_id = _new_project_id(scenario.id)
         workspace_tmp = __import__("tempfile").TemporaryDirectory(
@@ -548,6 +587,7 @@ async def run_container_value_benchmark(
                 profile,
                 workspace_tmp.name,
                 project_id,
+                proxy_url=(proxy.url if "proxy" in locals() and proxy is not None else None),
             )
             try:
                 # The agent runs in Docker, while benchmark seeding runs on
@@ -571,6 +611,9 @@ async def run_container_value_benchmark(
                 container_config,
                 profile=profile,
                 project_id=project_id,
+                proxy_arm="replay",
+                proxy_audit_path="/run/llm-memory-bench/memoryhub-proxy-audit.jsonl",
+                proxy_url=(proxy.url if "proxy" in locals() and proxy is not None else None),
             )
             try:
                 install_integration(memory_container, workspace_tmp.name, profile)
@@ -629,6 +672,9 @@ async def run_container_value_benchmark(
                         ) from exc
         finally:
             workspace_tmp.cleanup()
+            if "proxy" in locals() and proxy is not None:
+                proxy.stop()
+                proxy = None
 
         run_result.scenario_results.append(scenario_result)
 

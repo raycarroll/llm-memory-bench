@@ -175,7 +175,7 @@ llm_memory_bench/
 │
 ├── src/llm_memory_bench/value/
 │   ├── generator_targeted.py              # ✅ Template-based generation
-│   ├── runner.py                          # ✅ Paired trial execution
+│   ├── simulated_tool_value_runner.py     # ✅ Paired trial execution
 │   ├── evaluator.py                       # ⏳ LLM judge (exists, needs testing)
 │   └── metrics.py                         # ✅ Value metric computation
 │
@@ -213,7 +213,7 @@ llm_memory_bench/
 
 2. **Inspect results** manually before full run
 
-3. **Fix any issues** in runner.py or evaluator.py
+3. **Fix any issues** in simulated_tool_value_runner.py or evaluator.py
 
 4. **Scale to 50 scenarios** once validated
 

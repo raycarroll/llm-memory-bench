@@ -15,6 +15,7 @@ topology:
   kind: remote-http
   endpoint_env: MEMORYHUB_URL
   agent_transport: http
+  upstream_transport: http
   authentication:
     - session-registration-tool
   runtime_env:
@@ -51,12 +52,21 @@ platforms:
         mode: 493
       - source: assets/.claude/settings.json
         target: .claude/settings.json
+      - source: assets/.llm-memory-bench/memoryhub-mcp-proxy.py
+        target: .llm-memory-bench/memoryhub-mcp-proxy.py
+        mode: 493
     mcp:
       path: .mcp.json
       servers:
         memoryhub:
-          url: "{{ MEMORYHUB_URL }}"
+          # Both benchmark arms use one HTTP proxy deployment. The arm and
+          # project are request headers, so capture and replay can share the
+          # service without changing the upstream tool definitions.
+          url: "${MEMORYHUB_BENCH_PROXY_URL}"
           type: http
+          headers:
+            X-LLM-Memory-Bench-Arm: "${MEMORYHUB_BENCH_ARM}"
+            X-LLM-Memory-Bench-Project-ID: "${MEMORYHUB_PROJECT_ID}"
     required_commands:
       - memoryhub
 
