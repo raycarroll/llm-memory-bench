@@ -12,6 +12,7 @@ from pydantic import BaseModel
 
 from .evaluation_service import EvaluationService
 from .experiments import (
+    DemoExperiment,
     ExtractionExperiment,
     Tau2Experiment,
     ValueExperiment,
@@ -42,14 +43,17 @@ class RunService:
     def __init__(self, results_dir: Path | str = "results/ui"):
         self.results_dir = Path(results_dir)
         self.extraction = ExtractionExperiment()
+        self.demo = DemoExperiment()
         self.value = ValueExperiment()
         self.tau2 = Tau2Experiment(self.results_dir)
         self.evaluation = EvaluationService(self.results_dir)
 
-    async def execute(self, spec: RunSpec) -> dict[str, Any]:
+    async def execute(self, spec: RunSpec, on_event=None) -> dict[str, Any]:
         run_id = self._run_id(spec)
         if spec.kind == "extraction":
             output = await self.extraction.run(spec, run_id)
+        elif spec.kind == "demo":
+            output = await self.demo.run(spec, run_id, on_event=on_event)
         elif spec.kind == "value":
             output = await self.value.run(spec, run_id)
         elif spec.kind == "tau2":
@@ -98,6 +102,7 @@ class RunService:
             f"model={spec.get('model', '')}",
             f"system={spec.get('simulated_tool_system', '')}",
             f"dataset={spec.get('dataset_path', '')}",
+            f"demo_config={spec.get('demo_config_path', '')}",
         ]
         if result.get("run", {}).get("scenario_results") is not None:
             lines.append(
@@ -116,6 +121,9 @@ class RunService:
             for trial in scenario.get("trials", {}).values():
                 for turn in trial.get("turns", []):
                     events.extend(turn.get("integration_events", []))
+        demo = result.get("demo", {})
+        for side in demo.get("sides", {}).values():
+            events.extend(side.get("events", []))
         if events:
             lines.append("")
             lines.append("integration_events:")
@@ -123,9 +131,9 @@ class RunService:
                 lines.append(json.dumps(event, sort_keys=True))
         return "\n".join(lines) + "\n"
 
-    def execute_sync(self, spec: RunSpec) -> dict[str, Any]:
+    def execute_sync(self, spec: RunSpec, on_event=None) -> dict[str, Any]:
         """Synchronous entry point for Streamlit callbacks and CLI callers."""
-        return asyncio.run(self.execute(spec))
+        return asyncio.run(self.execute(spec, on_event=on_event))
 
     async def evaluate(self, spec: EvaluationSpec) -> dict[str, Any]:
         """Compatibility entry point for saved-result evaluation."""

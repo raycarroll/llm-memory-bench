@@ -3,6 +3,7 @@
 from .evaluators import Evaluator, ExtractionEvaluator, ValueEvaluator
 from .evaluation_service import EvaluationService
 from .experiments import (
+    DemoExperiment,
     Experiment,
     ExperimentOutput,
     ExtractionExperiment,
@@ -15,6 +16,7 @@ from .specs import EvaluationSpec, RunSpec
 __all__ = [
     "EvaluationSpec",
     "EvaluationService",
+    "DemoExperiment",
     "Evaluator",
     "Experiment",
     "ExperimentOutput",

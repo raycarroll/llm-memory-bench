@@ -22,6 +22,8 @@ from ..value.clbench import (
 )
 from .evaluators import Evaluator, ExtractionEvaluator, ValueEvaluator
 from .specs import RunSpec
+from ..demo import load_demo_spec
+from ..demo.driver import run_demo
 
 
 @dataclass
@@ -37,8 +39,36 @@ class Experiment(Protocol):
 
     kind: str
 
-    async def run(self, spec: RunSpec, run_id: str) -> ExperimentOutput:
+    async def run(self, spec: RunSpec, run_id: str, on_event=None) -> ExperimentOutput:
         """Execute one experiment described by ``spec``."""
+
+
+class DemoExperiment:
+    kind = "demo"
+
+    async def run(self, spec: RunSpec, run_id: str, on_event=None) -> ExperimentOutput:
+        if not spec.demo_config_path:
+            raise ValueError("demo_config_path is required for demo runs")
+        demo = load_demo_spec(spec.demo_config_path)
+        # The sidebar's demo limit must override the scenario default. Keep
+        # the YAML as the source of all other limits and boundaries.
+        demo = demo.model_copy(
+            update={
+                "limits": demo.limits.model_copy(update={"max_turns": spec.max_turns})
+            }
+        )
+        result = await run_demo(
+            demo,
+            provider_name=spec.provider,
+            model=spec.model,
+            memory_system=spec.simulated_tool_system,
+            memory_mode=spec.mode,
+            api_key_env=spec.api_key_env,
+            on_event=on_event,
+            prepare_memory=spec.demo_prepare_memory,
+            prepare_max_turns=spec.demo_prepare_max_turns,
+        )
+        return ExperimentOutput({"demo": result})
 
 
 class ExtractionExperiment:

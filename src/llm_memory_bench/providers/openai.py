@@ -51,6 +51,8 @@ class OpenAIProvider(LLMProvider):
         messages: list[dict],
         tools: list[dict],
         system: str,
+        tool_choice: str | None = None,
+        disable_parallel_tool_calls: bool = False,
     ) -> ProviderResponse:
         api_messages = [{"role": "system", "content": system}]
         api_messages.extend(messages)
@@ -72,6 +74,15 @@ class OpenAIProvider(LLMProvider):
 
             if tools:
                 kwargs["tools"] = self._to_openai_tools(tools)
+                if disable_parallel_tool_calls:
+                    kwargs["parallel_tool_calls"] = False
+                if tool_choice and tool_choice != "auto":
+                    kwargs["tool_choice"] = {
+                        "type": "function",
+                        "function": {"name": tool_choice},
+                    }
+                elif tool_choice == "auto":
+                    kwargs["tool_choice"] = "auto"
 
             # Debug: log the actual request size
             import json

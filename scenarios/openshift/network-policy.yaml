@@ -1,0 +1,169 @@
+demo_id: network-policy@1.0.0
+demo_version: 1.0.0
+prompt: >-
+  Troubleshoot the frontend in your assigned demo namespace, restore healthy
+  operation and report the evidence and verification result.
+system_prompt: >-
+  You are an SRE responsible for resolving and verifying the unhealthy workload
+  in your assigned namespace.
+
+  Use the available tools to gather live evidence before changing anything. If
+  MemoryHub search is available, use it before making a change, but treat the
+  result as a hypothesis and confirm it against the workload.
+
+  Make only justified changes within the assigned namespace. Reassess the full
+  observed state after each change, wait for recovery, and use current evidence
+  to verify the result. If verification is not passed, continue investigating;
+  do not claim completion while the diagnosis, remediation, or recovery remains
+  uncertain. Keep a concise record of observed symptoms, confirmed causes,
+  changes, and remaining gaps so established evidence can be reused.
+memoryhub_project_id: openshift-networkpolicy-demo
+memoryhub:
+  type: mcp
+  transport: streamable_http
+  endpoint_env: MEMORYHUB_MCP_URL
+  api_key_env: MEMORYHUB_API_KEY
+  action_tool: memory
+  search_action: search
+  max_results: 5
+sides:
+  memory:
+    namespace: demo-memory
+    kubernetes_endpoint_env: K8S_MEMORY_MCP_URL
+    kubernetes_tools:
+      - pods_list_in_namespace
+      - pods_get
+      - pods_log
+      - events_list
+      - resources_list
+      - resources_get
+      - resources_create_or_update
+    memoryhub_tools:
+      - memoryhub_search
+  baseline:
+    namespace: demo-baseline
+    kubernetes_endpoint_env: K8S_BASELINE_MCP_URL
+    kubernetes_tools:
+      - pods_list_in_namespace
+      - pods_get
+      - pods_log
+      - events_list
+      - resources_list
+      - resources_get
+      - resources_create_or_update
+    memoryhub_tools: []
+read_only_tools:
+  - pods_list_in_namespace
+  - pods_get
+  - pods_log
+  - events_list
+  - resources_list
+  - resources_get
+change_making_tools:
+  - resources_create_or_update
+change_resources:
+  - networkpolicy/dependency-ingress
+  - networkpolicy/frontend-egress
+change_resource_api_versions:
+  networkpolicy/dependency-ingress:
+    - networking.k8s.io/v1
+  networkpolicy/frontend-egress:
+    - networking.k8s.io/v1
+memory_search_required_before_change: true
+limits:
+  max_turns: 30
+  timeout_seconds: 300
+  tool_timeout_seconds: 45
+fixture:
+  resources:
+    - resource: networkpolicy/dependency-ingress
+      patch_type: merge
+      patch:
+        spec:
+          podSelector:
+            matchLabels: {app: dependency}
+          policyTypes: [Ingress]
+          ingress:
+            - from:
+                - podSelector:
+                    matchLabels: {app: frontend-v1}
+              ports:
+                - {protocol: TCP, port: 8080}
+          egress: null
+    - resource: networkpolicy/frontend-egress
+      patch_type: merge
+      patch:
+        spec:
+          podSelector:
+            matchLabels: {app: frontend}
+          policyTypes: [Egress]
+          ingress: null
+          egress:
+            - to:
+                - namespaceSelector:
+                    matchLabels:
+                      kubernetes.io/metadata.name: openshift-dns
+                  podSelector:
+                    matchLabels:
+                      dns.operator.openshift.io/daemonset-dns: default
+              ports:
+                - {protocol: UDP, port: 5353}
+                - {protocol: TCP, port: 5353}
+verification:
+  context_env: OPENSHIFT_CONTEXT
+  frontend_pod_selector: app=frontend
+  dependency_pod_selector: app=dependency
+  frontend_container: frontend
+  dependency_container: dependency
+  service: dependency
+  ingress_policy: dependency-ingress
+  egress_policy: frontend-egress
+  dependency_port: 8080
+  dependency_protocol: TCP
+  dns_resolved_log_marker: "DNS resolved dependency to"
+  dependency_success_log_prefix: "Dependency check succeeded:"
+  dependency_log_prefixes:
+    - "Dependency check succeeded:"
+    - "Dependency connection failed:"
+    - "Dependency DNS lookup failed:"
+  dns_rule:
+    to:
+      - namespaceSelector:
+          matchLabels:
+            kubernetes.io/metadata.name: openshift-dns
+        podSelector:
+          matchLabels:
+            dns.operator.openshift.io/daemonset-dns: default
+    ports:
+      - {protocol: UDP, port: 5353}
+      - {protocol: TCP, port: 5353}
+  expected_ingress_policy_spec:
+    podSelector:
+      matchLabels: {app: dependency}
+    policyTypes: [Ingress]
+    ingress:
+      - from:
+          - podSelector:
+              matchLabels: {app: frontend}
+        ports:
+          - {protocol: TCP, port: 8080}
+  expected_egress_policy_spec:
+    podSelector:
+      matchLabels: {app: frontend}
+    policyTypes: [Egress]
+    egress:
+      - to:
+          - namespaceSelector:
+              matchLabels:
+                kubernetes.io/metadata.name: openshift-dns
+            podSelector:
+              matchLabels:
+                dns.operator.openshift.io/daemonset-dns: default
+        ports:
+          - {protocol: UDP, port: 5353}
+          - {protocol: TCP, port: 5353}
+      - to:
+          - podSelector:
+              matchLabels: {app: dependency}
+        ports:
+          - {protocol: TCP, port: 8080}

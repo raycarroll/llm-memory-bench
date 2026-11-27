@@ -15,10 +15,13 @@ class RunSpec(BaseModel):
     and a future EvalHub adapter can all submit the same specification.
     """
 
-    kind: Literal["value", "tau2", "extraction"] = "value"
+    kind: Literal["value", "tau2", "extraction", "demo"] = "value"
     execution: Literal["api", "container"] = "api"
     dataset_path: str
     container_config_path: str | None = None
+    demo_config_path: str | None = None
+    demo_prepare_memory: bool = False
+    demo_prepare_max_turns: int = Field(default=60, ge=1)
     goal_id: str | None = None
     provider: str = "openai"
     model: str = "gpt-4o"
@@ -38,7 +41,7 @@ class RunSpec(BaseModel):
     clbench_memory_system: str = "simple"
     clbench_memory_prompt_version: str | None = None
     clbench_seed_memories_path: str | None = None
-    max_turns: int = Field(default=10, ge=1)
+    max_turns: int = Field(default=30, ge=1)
     max_scenarios: int | None = Field(default=None, ge=1)
     max_conversations: int | None = Field(default=None, ge=1)
     judge_during_run: bool = True
