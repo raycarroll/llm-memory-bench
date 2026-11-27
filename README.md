@@ -1,30 +1,38 @@
 # llm-memory-bench
 
 `llm-memory-bench` is a reproducible evaluation harness for agent memory
-systems. It helps answer a practical question: **does a memory setup make an
-agent more useful, and does it work in the runtime where we intend to use it?**
+systems. It supports two related but separate questions:
 
-The unit being evaluated is not just an LLM. A run combines a model with a
-memory prompt, tool contract, memory setup, task dataset, and execution
-runtime. The harness lets you hold those inputs constant while comparing
-memory-system designs, prompts, models, and integrations.
+1. **Extraction:** how well do agents and models proactively identify and
+   store useful memories from interactions?
+2. **Value:** how much do those memories improve downstream tasks, including
+   functional, personalisation, and domain-specific workflows?
 
-It separates three questions that are often conflated:
+A run evaluates a model, memory prompt and tool contract, memory setup, task
+dataset, and execution runtime together. The harness lets you compare
+memory-system designs, prompts, models, and integrations while keeping the
+relevant experiment inputs constant. Real runtimes and integrations validate
+how results transfer beyond simulated tool execution; they are supporting
+paths for the two benchmark aims, not a third aim.
 
-- **Extraction:** does the agent identify information worth retaining in noisy
-  conversation, call the memory interface correctly, and produce memories that
-  match the ground truth?
-- **Value:** when memories are available on a later task, do they improve task
-  outcomes, reduce turns or tokens, or otherwise change the result? This uses
-  paired baseline-versus-memory trials.
-- **Integration:** does the real agent, memory backend, tools, lifecycle, and
-  verification path work together outside a simulated harness? The repository
-  includes containerised integrations and an OpenShift operational demo for
-  this purpose.
+**Extraction** supports two datasets:
 
-Extraction uses annotated conversations from
-[AlpsBench](https://huggingface.co/datasets/Cosineyx/Alpsbench). Value runs use
-generated or curated scenarios and can also use τ²-bench or CL-Bench sources.
+- **[AlpsBench](https://huggingface.co/datasets/Cosineyx/Alpsbench)** — marks
+  which facts should be saved and where each fact appears in the conversation.
+- **BFCL Memory** — asks the agent to save facts before answering later
+  questions. `llm-memory-bench` creates cumulative extraction labels by
+  matching BFCL's answer source text to its prerequisite conversations; BFCL
+  does not provide these labels directly. Results from the two datasets are
+  not directly comparable.
+
+**Value** evaluates whether memory improves a downstream task using:
+
+- **Custom, generated, or curated scenarios** — including functional,
+  personalisation, and domain-specific tasks.
+- **τ²-bench and CL-Bench** — additional task sources with their own runtimes.
+- **OpenShift** — a live operational value/integration scenario comparing
+  paired agents with and without MemoryHub.
+
 The same experiment model can run against simulated memory tools, real
 containerised integrations, or the direct OpenShift demo.
 
@@ -46,15 +54,14 @@ simulated-tool and containerised execution are runtimes; τ² and CL-Bench are
 additional value sources; and the OpenShift demo has its own live-cluster
 runtime.
 
-| Experiment | Main entry point | What it needs |
+| Benchmark track or supporting path | Main entry point | What it needs |
 |---|---|---|
 | Extraction | `run` → `evaluate` | Provider API key; AlpsBench conversion |
-| Simulated value | `value-generate`/`value-run` | Provider API keys; scenario YAML |
-| Real extraction | `bench` | Docker/Podman; container config |
-| Real value | `container-value-run` | Docker/Podman; container config and scenarios |
-| τ² value | `tau2-value-run` or `tau2-container-run` | τ² data/runtime, or the pinned container |
-| CL-Bench value | `clbench-setup` → `clbench-value-run` | Optional Python 3.13 checkout/runtime |
-| OpenShift demo | Streamlit UI, select **OpenShift demo** | OpenShift cluster, MCP services, `oc`, MemoryHub |
+| Value: local scenarios | `value-generate`/`value-run` | Provider API keys; scenario YAML |
+| Value: τ² source | `tau2-value-run` or `tau2-container-run` | τ² data/runtime, or the pinned container |
+| Value: CL-Bench source | `clbench-setup` → `clbench-value-run` | Optional Python 3.13 checkout/runtime |
+| Integration: real extraction | `bench` | Docker/Podman; container config |
+| Integration/value demo: OpenShift | Streamlit UI, select **OpenShift demo** | OpenShift cluster, MCP services, `oc`, MemoryHub |
 
 **Key difference:** Simulated-tool tests ask "can the LLM use these tools correctly?" Real-system/containerised tests ask "does the full agent + memory system stack work together?"
 
@@ -636,9 +643,13 @@ llm-memory-bench compare path/to/eval-one.json path/to/eval-two.json
 
 Prints a side-by-side table of all metrics across evaluations, labeled by provider/model/system. Can also compare run files directly (without evaluation), but metrics will be limited.
 
-## Dataset
+## Datasets
 
-Uses [AlpsBench](https://huggingface.co/datasets/Cosineyx/Alpsbench) — conversations with human-verified memory items linked to source utterances.
+### AlpsBench extraction data
+
+[AlpsBench](https://huggingface.co/datasets/Cosineyx/Alpsbench) provides
+conversations with human-verified facts to save, linked to the utterance where
+each fact appears.
 
 - **Task 1 (Extraction):** Given a conversation, identify which facts to store
 - **Task 2 (Updating):** Given a conversation and existing memories, identify new or updated facts
@@ -653,6 +664,27 @@ llm-memory-bench convert --source alpsbench --max-conversations 10
 # Include all languages
 llm-memory-bench convert --source alpsbench --all-languages
 ```
+
+### BFCL Memory data
+
+BFCL Memory provides domain-specific prerequisite conversations and later
+retrieval questions. The repository can convert it into cumulative datasets
+for additional extraction analysis. This requires a clone of the BFCL/Gorilla
+repository:
+
+```bash
+git clone https://github.com/ShishirPatil/gorilla.git
+
+llm-memory-bench convert \
+  --source bfcl-memory \
+  --bfcl-repo /path/to/gorilla \
+  --output datasets/converted/bfcl
+```
+
+The converter creates cumulative labels by matching BFCL's answer source text
+to its prerequisite conversations. BFCL results should not be compared
+directly with AlpsBench's labels. See
+[docs/bfcl-memory-category.md](docs/bfcl-memory-category.md) for details.
 
 ## Providers
 
