@@ -16,10 +16,12 @@ how results transfer beyond simulated tool execution; they are supporting
 paths for the two benchmark aims, not a third aim.
 
 Extraction supports both [AlpsBench](https://huggingface.co/datasets/Cosineyx/Alpsbench)
-and BFCL Memory conversations. AlpsBench provides turn-level storage
-annotations. BFCL Memory combines proactive storage with later retrieval; this
-repository can convert it to cumulative, inferred extraction data for
-complementary analysis. The two datasets use different ground-truth models.
+and BFCL Memory conversations. AlpsBench marks which facts should be saved and
+where each fact appears in the conversation. BFCL Memory asks the agent to
+save facts before answering later questions; this repository can convert its
+source and answer data into cumulative labels for additional analysis. Because
+those BFCL labels are inferred, results from the two datasets are not directly
+comparable.
 Value runs use generated or curated scenarios and can also use τ²-bench or
 CL-Bench sources.
 The same experiment model can run against simulated memory tools, real
@@ -637,7 +639,8 @@ Prints a side-by-side table of all metrics across evaluations, labeled by provid
 ### AlpsBench extraction data
 
 [AlpsBench](https://huggingface.co/datasets/Cosineyx/Alpsbench) provides
-conversations with human-verified memory items linked to source utterances.
+conversations with human-verified facts to save, linked to the utterance where
+each fact appears.
 
 - **Task 1 (Extraction):** Given a conversation, identify which facts to store
 - **Task 2 (Updating):** Given a conversation and existing memories, identify new or updated facts
@@ -657,8 +660,8 @@ llm-memory-bench convert --source alpsbench --all-languages
 
 BFCL Memory provides domain-specific prerequisite conversations and later
 retrieval questions. The repository can convert it into cumulative datasets
-for complementary extraction analysis. This requires a clone of the
-BFCL/Gorilla repository:
+for additional extraction analysis. This requires a clone of the BFCL/Gorilla
+repository:
 
 ```bash
 git clone https://github.com/ShishirPatil/gorilla.git
@@ -669,8 +672,8 @@ llm-memory-bench convert \
   --output datasets/converted/bfcl
 ```
 
-The converter produces inferred cumulative labels, so BFCL results should not
-be compared directly with AlpsBench's turn-level metrics. See
+The converter infers which facts to test from BFCL's source and answer data, so
+BFCL results should not be compared directly with AlpsBench's labels. See
 [docs/bfcl-memory-category.md](docs/bfcl-memory-category.md) for details.
 
 ## Providers
