@@ -176,7 +176,8 @@ Examples of what TO store:
 
 ### 4. Test with BFCL Baseline System
 
-The `bfcl_baseline` system has no proactive guidance - just reactive tool-calling.
+The `simple` system is the minimal-prompt baseline; it provides basic memory guidance
+without the domain-specific BFCL scenario prompt.
 Check if it does WORSE (proving the simple prompt does help, just not enough).
 
 ## Verdict

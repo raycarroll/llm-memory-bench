@@ -205,8 +205,8 @@ conversations:
 ### Using Converters
 
 ```bash
-# AlpsBench → per-turn ground truth
-llm-memory-bench convert --source alpsbench-memory --alpsbench-file task1.csv
+# AlpsBench → converted Task 1 and Task 2 YAML (cumulative Task 1 ground truth)
+llm-memory-bench convert --source alpsbench --max-conversations 10
 
 # BFCL Memory → cumulative ground truth
 llm-memory-bench convert --source bfcl-memory --bfcl-repo /path/to/gorilla

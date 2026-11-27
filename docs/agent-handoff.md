@@ -15,8 +15,8 @@ deliberately broken NetworkPolicy scenario.
 
 Deployment-specific routes, API endpoints, image tags, and OpenShift context
 names must be supplied by the operator. Do not commit them to this handoff
-document. The verifier requires the `OPENSHIFT_CONTEXT` environment variable
-and passes it explicitly to every `oc` command.
+document. In a deployed pod, the verifier uses the application's ServiceAccount
+credentials; local execution can provide `KUBECONFIG` and `OPENSHIFT_CONTEXT`.
 
 ## Scenario
 

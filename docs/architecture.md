@@ -28,7 +28,10 @@ Memory extraction tests a harder variant: the model must identify **implicit tri
 
 ### Benchmarks and execution modes
 
-There are two orthogonal axes: **what** you're measuring (benchmark) and **how** you run it (execution mode).
+There are two primary axes: **what** you're measuring (experiment family) and
+**how** you run it (execution mode). Value experiments add a third dimension:
+the source/runtime that supplies their tasks, such as the local dataset, τ², or
+CL-Bench.
 
 **Benchmarks** (what):
 
@@ -36,6 +39,7 @@ There are two orthogonal axes: **what** you're measuring (benchmark) and **how**
 |-----------|-------------------|
 | **Extraction** | Can the LLM identify implicit triggers and call the memory tool proactively, with the right content? |
 | **Value** | Do stored memories actually improve downstream task performance (quality, tokens, turns)? |
+| **Operational demo** | Can paired agents diagnose and repair a live OpenShift workload, with and without MemoryHub? |
 
 **Execution modes** (how):
 
@@ -43,13 +47,15 @@ There are two orthogonal axes: **what** you're measuring (benchmark) and **how**
 |------|-----------|-------------|--------------|-----------|
 | **Simulated-tool** (`run`, `value-run`) | Extraction ✅<br>Value ✅ | Benchmark provides system prompts and tool schemas via Python adapters. Direct provider calls. Tool calls are intercepted and recorded, not executed. Success responses are simulated. | Can the LLM correctly use these memory tools? (prompt design, model capability) | Fast iteration, provider-agnostic, no containers required |
 | **Real-system/containerised** (`bench`, `container-value-run`) | Extraction ✅<br>Value ✅ | Real coding agent (Claude Code) with a real memory system installed inside Docker. The agent makes actual tool calls, data is stored for real, then queried afterward. | Does the full agent + memory system stack work together? (integration, real prompts, actual storage) | Slow, Docker required, tests complete deployed stack |
+| **Direct OpenShift** (Streamlit UI) | Operational demo ✅ | Two API agents use separate Kubernetes MCP endpoints; bounded `oc` commands independently reset and verify the fixture. | Does memory help a real operational repair while preserving an independent verification boundary? | Requires a live cluster and scenario-specific deployment |
 
 **Implementation matrix:**
 
-| | Extraction | Value |
-|---|---|---|
-| **Simulated-tool** | ✅ `llm-memory-bench run` | ✅ `llm-memory-bench value-run` |
-| **Real-system/containerised** | ✅ `llm-memory-bench bench` | ✅ `llm-memory-bench container-value-run` |
+| | Extraction | Value | Operational demo |
+|---|---|---|---|
+| **Simulated-tool** | ✅ `llm-memory-bench run` | ✅ `llm-memory-bench value-run` | — |
+| **Real-system/containerised** | ✅ `llm-memory-bench bench` | ✅ `llm-memory-bench container-value-run` | — |
+| **Direct OpenShift** | — | — | ✅ Streamlit UI |
 
 **Simulated-tool execution** is useful for:
 - Comparing models and prompt designs quickly
@@ -114,11 +120,12 @@ classDiagram
     direction LR
 
     class RunSpec {
-        +kind: value | tau2 | extraction
+        +kind: value | tau2 | extraction | demo
         +execution: api | container
         +simulated_tool_system: str
         +provider: str
         +model: str
+        +value_source: dataset | tau2 | clbench
     }
 
     class RunService {
@@ -133,6 +140,7 @@ classDiagram
     class ExtractionExperiment
     class ValueExperiment
     class Tau2Experiment
+    class DemoExperiment
 
     class Dataset {
         +conversations
@@ -203,6 +211,7 @@ classDiagram
     Experiment <|.. ExtractionExperiment
     Experiment <|.. ValueExperiment
     Experiment <|.. Tau2Experiment
+    Experiment <|.. DemoExperiment
     Evaluator <|.. ExtractionEvaluator
     Evaluator <|.. ValueEvaluator
     Dataset *-- Conversation
@@ -267,7 +276,7 @@ flowchart TB
 
 - `RunSpec`: one requested run; `kind` selects the benchmark and `execution` selects the runtime.
 - `RunService`: dispatches the spec to an experiment.
-- `ExtractionExperiment` / `ValueExperiment` / `Tau2Experiment`: benchmark use-case coordinators.
+- `ExtractionExperiment` / `ValueExperiment` / `Tau2Experiment` / `DemoExperiment`: benchmark use-case coordinators. CL-Bench is a `ValueExperiment` source rather than a separate experiment kind.
 - `Dataset`: extraction input containing conversations, turns, and ground truth.
 - `GroundTruth`: expected stored facts for a turn or cumulative conversation; `ExpectedFact` is one annotated fact.
 - `ValueDataset`: value input containing scenarios, memory banks, task prompts, outcomes, and validators.
@@ -277,12 +286,12 @@ flowchart TB
 - Simulated runners: intercept tool calls and return simulated results.
 - Real-system runners: drive the agent, live tools, and persistent memory integration.
 - `Container configuration`: selects the host, model, system/profile, environment, dataset, isolation, and lifecycle settings.
-- `RunResult` / `BenchResult` / `ValueRunResult`: benchmark-specific outputs.
+- `RunResult` / `BenchResult` / `ValueRunResult` / `DemoRunResult`: benchmark-specific outputs.
 
 `RunSpec` values:
 
 ```text
-kind                 value | tau2 | extraction
+kind                 value | tau2 | extraction | demo
 execution            api | container
 memory_setup_mode    none | seeded | capture_first
 value_source         dataset | tau2 | clbench
@@ -292,7 +301,11 @@ ground_truth_type    per_turn | cumulative
 
 For `value_source=dataset`, `dataset_path` points to a `ValueDataset`. τ² and CL-Bench use their native task/scenario sources instead.
 
-The internal `execution=api` value is the user-facing **simulated-tool** mode. `execution=container` is the **real-system/containerised** mode.
+The internal `execution=api` value is the user-facing **simulated-tool** mode
+for extraction/value runs and the direct-agent mode for the OpenShift demo.
+`execution=container` is the **real-system/containerised** mode. The UI sets
+`kind="demo"` and `demo_config_path` for the OpenShift scenario; it does not
+dispatch the demo through the generic simulated memory adapters.
 
 Runner file mapping:
 
@@ -301,6 +314,7 @@ Simulated extraction runner      simulated_tool_extraction_runner.py
 Simulated value runner           value/simulated_tool_value_runner.py
 Real-system extraction runner    real_system_container_extraction_runner.py
 Real-system value runner         value/real_system_container_value_runner.py
+OpenShift demo coordinator        application/experiments.py → demo/driver.py
 ```
 
 ## System diagram
@@ -968,10 +982,14 @@ SYSTEMS["my_system"] = MySystem
 ```
   ValueRunConfig (extends RunConfig)
   ├── injection_mode: str             # "prompt" | "tool" | "both"
+  ├── memory_setup_mode: str          # "none" | "seeded" | "capture_first"
   ├── max_turns: int                  # Max conversation turns per trial
   ├── user_simulator_provider: str    # Provider for user simulator
   ├── user_simulator_model: str       # Model for user simulator
-  └── max_scenarios: int              # Limit scenarios
+  ├── max_scenarios: int              # Limit scenarios
+  ├── judge_during_run: bool          # Stop when outcome validation passes
+  ├── max_total_tokens: int           # Optional cumulative token limit
+  └── max_cost_usd: float              # Optional cumulative cost limit
 ```
 
 ### Real-system/containerised benchmark (`bench.RunConfig`)
@@ -985,7 +1003,10 @@ SYSTEMS["my_system"] = MySystem
   ├── system_env: dict        # Env vars passed to the container
   ├── model: str              # Model identifier
   ├── dataset_path: str       # Path to converted dataset
-  └── max_conversations: int  # Limit for quick tests
+  ├── max_conversations: int  # Limit for quick tests
+  ├── integration_profile: str       # Optional versioned profile
+  ├── experiment_group: str          # Optional reproducibility group
+  └── experiment_runs: int           # Repeated runs in the group
 ```
 
 ### OpenShift demo experiment
@@ -997,9 +1018,10 @@ demo driver. Each side owns an independent Kubernetes MCP session and
 namespace; the memory side additionally owns a MemoryHub MCP session.
 
 The model's completion is never treated as success by itself. The direct
-OpenShift verifier checks the live workload independently, using an explicit
-`OPENSHIFT_CONTEXT`, and the result stores agent status separately from
-verification status.
+OpenShift verifier checks the live workload independently. In a deployed
+OpenShift pod it uses the application's ServiceAccount token and CA; local
+execution can use `KUBECONFIG` plus the configured `OPENSHIFT_CONTEXT`. The
+result stores agent status separately from verification status.
 
 ```text
 RunSpec(kind="demo")

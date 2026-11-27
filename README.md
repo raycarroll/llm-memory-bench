@@ -1,30 +1,60 @@
 # llm-memory-bench
 
-Benchmark LLM **proactive tool-calling judgment** — the ability to decide *when* to act without being explicitly asked.
+`llm-memory-bench` is a reproducible evaluation harness for agent memory
+systems. It helps answer a practical question: **does a memory setup make an
+agent more useful, and does it work in the runtime where we intend to use it?**
 
-Existing tool-calling benchmarks ([BFCL](https://gorilla.cs.berkeley.edu/leaderboard.html), [TaskBench](https://openreview.net/pdf?id=ZUbraGNpAq)) test structural complexity: can the model call the right function with the right arguments? But they test **reactive** tool use — the user asks a question, the model picks a tool. The hard part of real-world tool use is often **proactive judgment**: recognizing that something worth acting on just happened, with no explicit trigger.
+The unit being evaluated is not just an LLM. A run combines a model with a
+memory prompt, tool contract, memory setup, task dataset, and execution
+runtime. The harness lets you hold those inputs constant while comparing
+memory-system designs, prompts, models, and integrations.
 
-Memory extraction is a natural testbed for this. In a conversation, the user never says "save this to memory." They mention they're a data scientist, or that they prefer Python, or that there's a deploy freeze on Thursday. The model must recognize these as worth persisting, decide to call the memory tool unprompted, and do so at the right moment — all while ignoring the ~90% of turns that are noise.
+It separates three questions that are often conflated:
 
-This project uses conversations from [AlpsBench](https://huggingface.co/datasets/Cosineyx/Alpsbench) with human-verified ground-truth annotations, and tests LLMs against tool schemas and prompts inspired by real memory systems.
+- **Extraction:** does the agent identify information worth retaining in noisy
+  conversation, call the memory interface correctly, and produce memories that
+  match the ground truth?
+- **Value:** when memories are available on a later task, do they improve task
+  outcomes, reduce turns or tokens, or otherwise change the result? This uses
+  paired baseline-versus-memory trials.
+- **Integration:** does the real agent, memory backend, tools, lifecycle, and
+  verification path work together outside a simulated harness? The repository
+  includes containerised integrations and an OpenShift operational demo for
+  this purpose.
 
-**Two benchmarks** (what you're measuring):
+Extraction uses annotated conversations from
+[AlpsBench](https://huggingface.co/datasets/Cosineyx/Alpsbench). Value runs use
+generated or curated scenarios and can also use τ²-bench or CL-Bench sources.
+The same experiment model can run against simulated memory tools, real
+containerised integrations, or the direct OpenShift demo.
 
-- **Extraction** — can the LLM identify implicit triggers in noisy conversation and call the memory tool proactively?
-- **Value** — do stored memories actually improve downstream task performance?
+**What this project is not:** it is not a single memory product, a generic
+MCP/tool-calling leaderboard, or proof that a simulated tool call was persisted
+by a live backend. Simulated runs isolate model and prompt behaviour; real
+integration runs test the deployed memory stack.
 
-**Two execution modes** (how you run them):
+**Execution modes** (how you run them):
 
 - **Simulated-tool** (`run`, `value-run`) — Direct provider calls with simulated memory tools. The benchmark provides the system prompt and tool schemas (from `src/llm_memory_bench/systems/`), intercepts tool calls, and simulates success responses. Fast iteration, works with any LLM provider. Supports both extraction and value benchmarks.
 
 - **Real-system/containerised** (`bench`, `container-value-run`) — Real agent + real memory system integration testing. Runs Claude Code (or other agents) with actual memory systems installed via MCP inside Docker. The agent makes real tool calls, data is actually stored, and we query what was saved.
 
-**These are orthogonal:** You can run either benchmark (extraction or value) in either mode. The Streamlit UI presents extraction and value as the experiment families, then selects the applicable runtime. τ²-bench appears as a value scenario source.
+- **Direct OpenShift** (Streamlit UI) — Paired API agents use separate Kubernetes MCP endpoints and an independent `oc` verifier against a live cluster. This is a specialised operational demo, not a replacement for the extraction/value runners.
 
-| | Extraction Benchmark | Value Benchmark |
+The axes are intentionally separate: extraction and value are benchmark families;
+simulated-tool and containerised execution are runtimes; τ² and CL-Bench are
+additional value sources; and the OpenShift demo has its own live-cluster
+runtime.
+
+| Experiment | Main entry point | What it needs |
 |---|---|---|
-| **Simulated-tool** | ✅ `run` | ✅ `value-run` |
-| **Real-system/containerised** | ✅ `bench` | ✅ `container-value-run` and Streamlit UI |
+| Extraction | `run` → `evaluate` | Provider API key; AlpsBench conversion |
+| Simulated value | `value-generate`/`value-run` | Provider API keys; scenario YAML |
+| Real extraction | `bench` | Docker/Podman; container config |
+| Real value | `container-value-run` | Docker/Podman; container config and scenarios |
+| τ² value | `tau2-value-run` or `tau2-container-run` | τ² data/runtime, or the pinned container |
+| CL-Bench value | `clbench-setup` → `clbench-value-run` | Optional Python 3.13 checkout/runtime |
+| OpenShift demo | Streamlit UI, select **OpenShift demo** | OpenShift cluster, MCP services, `oc`, MemoryHub |
 
 **Key difference:** Simulated-tool tests ask "can the LLM use these tools correctly?" Real-system/containerised tests ask "does the full agent + memory system stack work together?"
 
@@ -64,13 +94,36 @@ See [docs/architecture.md](docs/architecture.md) for diagrams and detailed desig
 pip install -e .
 ```
 
-Requires Python 3.11+. The real-system/containerised benchmark also requires Docker.
+Requires Python 3.11+. Add only the optional features you need:
+
+```bash
+# CLI extraction/value runs with the local embedding matcher
+pip install -e '.[embedding]'
+
+# Streamlit UI plus local embedding evaluation
+pip install -e '.[ui,embedding]'
+
+# Live MemoryHub support for τ² runs
+pip install -e '.[memoryhub]'
+```
+
+The real-system/containerised benchmarks require Docker or Podman. τ² and
+CL-Bench have additional runtime requirements described in
+[docs/tau2-value.md](docs/tau2-value.md) and [docs/clbench.md](docs/clbench.md).
+
+Set the provider credential before running an API-backed experiment. The
+benchmark reads the value but does not write it to result files:
+
+```bash
+export OPENAI_API_KEY="..."
+```
 
 ### Optional benchmark UI
 
 The Streamlit UI provides a guided run-definition and execution layer over the
-existing benchmark engines, including Claude Code container value runs. It
-writes UI-launched results to `results/ui/`.
+existing benchmark engines. It supports extraction, simulated value, real
+container value, τ², CL-Bench, and the OpenShift operational demo. It writes
+UI-launched results to `results/ui/`.
 
 ```bash
 pip install -e '.[ui]'
@@ -98,13 +151,17 @@ See [docs/ui-quickstart.md](docs/ui-quickstart.md).
    - Logic to extract facts from tool calls
    - Used by: simulated-tool execution (`run`, `value-run`)
 
-3. **Container scripts:** Bash scripts in top-level `systems/` that:
+3. **Real-system integration:** Either legacy container scripts in top-level
+   `systems/` or a versioned full-stack profile under `integrations/profiles/`
+   that:
    - Install the real memory system (`install.sh`)
-   - Query what was stored (`query.sh`)
-   - Reset state between tests (`cleanup.sh`)
-   - Used by: real-system/containerised execution (`bench`)
+   - Configure the real agent/MCP surface
+   - Query or verify what was stored
+   - Reset state between tests when supported
+   - Used by: real-system/containerised execution (`bench`, `container-value-run`)
 
-**These are completely separate:** Simulated-tool adapters are Python classes for fast testing. Container scripts install and query real systems for integration testing.
+Simulated-tool adapters are Python classes for fast testing. Real-system
+profiles and scripts exercise the deployed agent and memory integration.
 
 ```
 project root/
@@ -123,33 +180,91 @@ project root/
 
 ## Quick start
 
-### Simulated-tool benchmark
+### 1. Run a small extraction experiment
+
+This is the shortest path to a reproducible result. It converts two AlpsBench
+conversations, runs a simulated-tool extraction, and evaluates the saved run.
+The converted Task 1 dataset uses cumulative ground truth, so pass the dataset
+explicitly during evaluation.
 
 ```bash
-# 1. Convert the AlpsBench dataset
-llm-memory-bench convert --source alpsbench
+pip install -e '.[embedding]'
+export OPENAI_API_KEY="..."
 
-# 2. Run the extraction benchmark (captures tool calls)
+llm-memory-bench convert \
+  --source alpsbench \
+  --output datasets/converted/smoke \
+  --max-conversations 2
+
 llm-memory-bench run \
-  --dataset datasets/converted/alpsbench-task1.yaml \
-  --system claude_code \
-  --provider vertex \
-  --model claude-sonnet-4@20250514
+  --dataset datasets/converted/smoke/alpsbench-task1.yaml \
+  --system memoryhub \
+  --provider openai \
+  --model gpt-4o \
+  --max-conversations 2 \
+  --output results/smoke/run.json
 
-# 3. Evaluate against ground truth (computes metrics)
-llm-memory-bench evaluate results/run_*.json \
-  --matcher embedding
-
-# 4. Compare multiple evaluations
-llm-memory-bench compare results/eval_*.json
+llm-memory-bench evaluate results/smoke/run.json \
+  --dataset datasets/converted/smoke/alpsbench-task1.yaml \
+  --matcher embedding \
+  --output results/smoke/eval_embedding.json
 ```
 
-### Real-system/containerised benchmark
+The run and evaluation are separate artifacts. Use
+`llm-memory-bench compare` only when you have two or more evaluation files,
+for example after evaluating two systems:
 
 ```bash
-# Run through real Claude Code + gbrain in Docker
+llm-memory-bench compare \
+  results/simple/eval_embedding.json \
+  results/memoryhub/eval_embedding.json
+```
+
+Use `llm-memory-bench list-systems` to see the complete current adapter list.
+
+### 2. Run a paired simulated value experiment
+
+Use the checked-in quick scenario when you want to test whether memory changes
+task outcomes rather than storage decisions:
+
+```bash
+llm-memory-bench value-run \
+  --scenarios scenarios/quick-demo-goal.yaml \
+  --system memoryhub \
+  --provider openai \
+  --model gpt-4o \
+  --max-scenarios 1 \
+  --output results/value-smoke.json
+
+llm-memory-bench value-visualize results/value-smoke.json
+```
+
+`value-run` evaluates the paired arms during the run. There is no separate
+`value-evaluate` or `value-compare` command. Its default
+`--memory-setup-mode` is `none`; choose `seeded` or `capture_first` when that
+is part of the experiment design.
+
+### 3. Use the UI for the complete experiment menu
+
+```bash
+pip install -e '.[ui,embedding]'
+llm-memory-bench-ui
+```
+
+The UI exposes the same `RunSpec`/`RunService` boundary for extraction, value,
+τ², CL-Bench, and the OpenShift demo. See
+[docs/ui-quickstart.md](docs/ui-quickstart.md) for the provider, container,
+live MemoryHub, and cluster-specific setup.
+
+### 4. Run a real container integration
+
+```bash
 llm-memory-bench bench configs/claude-gbrain.yaml
 ```
+
+For the versioned Claude Code + remote MemoryHub profile, use
+`configs/claude-memoryhub-remote.yaml` instead. Container runs need Docker or
+Podman and the credentials referenced by the selected YAML config.
 
 ## Memory systems (simulated-tool)
 
@@ -163,12 +278,22 @@ llm-memory-bench list-systems
 
 | System | Description |
 |--------|-------------|
-| `bfcl_baseline` | BFCL-style generic prompt with no proactive guidance (reactive baseline for comparison) |
 | `simple` | Basic proactive system: `add_memory(fact, category)` with explicit storage guidance |
+| `simple_sweep` | Turn-by-turn extraction plus a final sweep pass |
 | `claude_code` | Claude Code's auto-memory: typed memories (user/feedback/project/reference) with structured `save_memory` tool |
 | `gbrain` | GBrain MCP knowledge-brain: `put_page` with slug-organized markdown pages + `capture` for quick one-liners |
+| `gbrain_sweep` | GBrain turn-by-turn extraction plus a final sweep pass |
+| `hindsight` | Hindsight retain/recall/reflect memory adapter |
+| `mem0` | Mem0-style automatic fact extraction |
 | `memoryhub` | MemoryHub unified `memory(action=...)` dispatcher with scoped writes, weighted memories, and content type classification |
+| `memoryhub_sweep` | MemoryHub turn-by-turn extraction plus a final sweep pass |
+| `bfcl_memory_kv` | BFCL Memory key/value adapter; use `--scenario` where required |
+| `behavioral_relevance` | STORE/SKIP behavioral relevance prompt |
 | `openclaw` | OpenClaw file-backed memory: `write`/`edit` to `USER.md`, `MEMORY.md`, and `memory/YYYY-MM-DD.md` daily notes |
+| `alpsbench_batch` | AlpsBench Task 1 batch baseline |
+
+The exact descriptions and registered names come from the installed package;
+`list-systems` is authoritative.
 
 ## Benchmarks
 
@@ -218,7 +343,7 @@ Budget controls are cumulative across all API calls. The estimate is approximate
 #### 2. Evaluate (compute metrics)
 
 ```bash
-llm-memory-bench evaluate results/run_*.json \
+llm-memory-bench evaluate results/run.json \
   --matcher <embedding|llm|hybrid> \
   --dataset datasets/converted/alpsbench-task1.yaml
 ```
@@ -246,7 +371,7 @@ Compares captured tool calls against ground truth using semantic matching. Compu
 #### 3. Compare (view results)
 
 ```bash
-llm-memory-bench compare results/eval_*.json
+llm-memory-bench compare results/system-a/eval_embedding.json results/system-b/eval_embedding.json
 ```
 
 Prints side-by-side metrics across multiple evaluations.
@@ -288,7 +413,7 @@ llm-memory-bench value-run \
 | `--scenarios` | *(required)* | Path to generated scenarios |
 | `--system` | `simple` | Memory system to use |
 | `--mode` | `prompt` | How memories are injected: `prompt` (in system prompt), `tool` (via recall tool), or `both` |
-| `--memory-setup-mode` | `seeded` | Use declared scenario memories or baseline-captured memories |
+| `--memory-setup-mode` | `none` | No memory setup by default; use `seeded` or `capture_first` explicitly |
 | `--max-turns` | `10` | Max conversation turns per trial |
 | `--user-sim-provider` | same as `--provider` | Provider for the simulated user |
 | `--user-sim-model` | same as `--model` | Model for the simulated user |
@@ -307,14 +432,21 @@ bfcl generate --model claude-sonnet-4-20250514 --test-category live_simple
 bfcl evaluate --model claude-sonnet-4-20250514 --test-category live_simple
 
 # Run memory benchmark (proactive judgment)
-llm-memory-bench run --dataset datasets/converted/alpsbench-task1.yaml \
-  --system memoryhub --model claude-sonnet-4-20250514
+llm-memory-bench run \
+  --dataset datasets/converted/alpsbench-task1.yaml \
+  --system memoryhub \
+  --provider anthropic \
+  --model claude-sonnet-4-20250514 \
+  --output results/bfcl-comparison/run.json
 
-llm-memory-bench evaluate results/run_*.json --matcher embedding
+llm-memory-bench evaluate results/bfcl-comparison/run.json \
+  --dataset datasets/converted/alpsbench-task1.yaml \
+  --matcher embedding \
+  --output results/bfcl-comparison/eval_embedding.json
 
 # Compare scores
 cat ~/.cache/bfcl/result/claude-sonnet-4-20250514/live_simple_score.json
-cat results/eval_*.json
+cat results/bfcl-comparison/eval_embedding.json
 ```
 
 **The gap** between BFCL accuracy and AlpsBench recall represents the cost of proactive judgment. If BFCL scores are high but memory extraction is low, the model can execute tools correctly when told to, but struggles to identify what's worth storing in natural conversation.
@@ -323,39 +455,46 @@ See [docs/baseline-comparison.md](docs/baseline-comparison.md) for detailed anal
 
 ## Prompt design comparison
 
-The `bfcl_baseline` system uses generic prompts (like BFCL does) to establish a floor, then compare against memory-optimized systems:
+Compare registered simulated-tool systems with the same dataset, provider, and
+model. For example, compare a simple prompt, MemoryHub's prompt, and the
+behavioral-relevance prompt:
 
 ```bash
-# Step 1: Run each system with the same model
-for sys in bfcl_baseline simple memoryhub; do
-  llm-memory-bench run --dataset datasets/converted/alpsbench-task1.yaml \
-    --system $sys --model claude-sonnet-4@20250514
+for sys in simple memoryhub behavioral_relevance; do
+  llm-memory-bench run \
+    --dataset datasets/converted/alpsbench-task1.yaml \
+    --system "$sys" \
+    --provider vertex \
+    --model claude-sonnet-4@20250514 \
+    --output "results/prompt-comparison/$sys/run.json"
 done
 
-# Step 2: Evaluate all runs
-for run in results/run_*.json; do
-  llm-memory-bench evaluate "$run" --matcher embedding
+# Step 2: Evaluate all runs with the same matcher
+for sys in simple memoryhub behavioral_relevance; do
+  llm-memory-bench evaluate "results/prompt-comparison/$sys/run.json" \
+    --dataset datasets/converted/alpsbench-task1.yaml \
+    --matcher embedding \
+    --output "results/prompt-comparison/$sys/eval_embedding.json"
 done
 
 # Step 3: Compare
-llm-memory-bench compare results/eval_*.json
+llm-memory-bench compare results/prompt-comparison/*/eval_embedding.json
 ```
 
-**Expected pattern:**
-- `bfcl_baseline`: ~28% recall (generic "use tools when needed" prompt)
-- `simple`: ~65% recall (+37% with basic proactive guidance)
-- `memoryhub`: ~72% recall (+7% with comprehensive prompting)
+Keep the comparison empirical: prompt performance depends on the model,
+dataset, matcher, and tool schema. This isolates the **value of proactive
+prompt design** from model changes without assuming fixed recall percentages.
 
-This isolates the **value of proactive prompt design** separate from model capability.
-
-See [docs/prompt-comparison.md](docs/prompt-comparison.md) for detailed workflow and interpretation.
+See [docs/prompt-comparison.md](docs/prompt-comparison.md) for the detailed workflow and interpretation.
 
 ### Real-system/containerised mode
 
 Runs benchmarks through the full stack: a real coding agent (Claude Code) with a real memory system (gbrain, Claude Code auto-memory) installed inside Docker. Instead of intercepting tool calls at the API layer, the agent uses the memory system for real and we query what was stored afterward.
 
 **Currently supports:** Extraction benchmark and paired value runs for the
-versioned Claude Code + MemoryHub integration profile.
+versioned Claude Code + MemoryHub integration profile. The OpenShift
+operational demo is a separate Streamlit/direct-cluster path described in
+[docs/ui-quickstart.md](docs/ui-quickstart.md).
 
 ```bash
 llm-memory-bench bench configs/claude-gbrain.yaml
@@ -492,7 +631,7 @@ configs/
 ## Comparing results
 
 ```bash
-llm-memory-bench compare results/eval_*.json
+llm-memory-bench compare path/to/eval-one.json path/to/eval-two.json
 ```
 
 Prints a side-by-side table of all metrics across evaluations, labeled by provider/model/system. Can also compare run files directly (without evaluation), but metrics will be limited.
@@ -520,7 +659,7 @@ llm-memory-bench convert --source alpsbench --all-languages
 | Provider | `--provider` value | Auth | Notes |
 |----------|-------------------|------|-------|
 | Anthropic | `anthropic` | `ANTHROPIC_API_KEY` | Claude models via direct API |
-| Vertex AI | `vertex` | `ANTHROPIC_VERTEX_PROJECT_ID`, `GOOGLE_CLOUD_REGION` | Claude models via Vertex AI |
+| Vertex AI | `vertex` | `ANTHROPIC_VERTEX_PROJECT_ID`, application default credentials, optional `CLOUD_ML_REGION` | Claude models via Vertex AI; default region is `us-east5` |
 | OpenAI | `openai` | `OPENAI_API_KEY` | GPT models |
 | LiteLLM | `litellm` | varies | Gemini, Mistral, Ollama, Bedrock, etc. |
 
@@ -617,7 +756,8 @@ for sys in simple claude_code gbrain; do
     --dataset datasets/converted/alpsbench-task1.yaml \
     --system $sys \
     --provider vertex \
-    --model claude-sonnet-4@20250514
+    --model claude-sonnet-4@20250514 \
+    --output "results/model-comparison/vertex/$sys/run.json"
 done
 
 for sys in simple claude_code gbrain; do
@@ -625,14 +765,21 @@ for sys in simple claude_code gbrain; do
     --dataset datasets/converted/alpsbench-task1.yaml \
     --system $sys \
     --provider openai \
-    --model gpt-4o
+    --model gpt-4o \
+    --output "results/model-comparison/openai/$sys/run.json"
 done
 
 # Step 2: Evaluate all runs
-for run in results/run_*.json; do
-  llm-memory-bench evaluate "$run" --matcher embedding
+for provider in vertex openai; do
+  for sys in simple claude_code gbrain; do
+    llm-memory-bench evaluate \
+      "results/model-comparison/$provider/$sys/run.json" \
+      --dataset datasets/converted/alpsbench-task1.yaml \
+      --matcher embedding \
+      --output "results/model-comparison/$provider/$sys/eval_embedding.json"
+  done
 done
 
 # Step 3: Compare all evaluations
-llm-memory-bench compare results/eval_*.json
+llm-memory-bench compare results/model-comparison/*/*/eval_embedding.json
 ```

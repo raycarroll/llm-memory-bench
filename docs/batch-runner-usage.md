@@ -17,14 +17,15 @@ llm-memory-bench run \
   --provider openai \
   --model gpt-4o \
   --batch \
-  --max-conversations 10
+  --max-conversations 10 \
+  --output results/batch-smoke/run.json
 
 # Evaluate with exact matching (AlpsBench-style)
-llm-memory-bench evaluate results/run_*_alpsbench_batch.json \
+llm-memory-bench evaluate results/batch-smoke/run.json \
   --matcher exact
 
 # Check F1 - should be ~33% (vs AlpsBench's 33.69% for GPT-4.1-mini)
-cat results/eval_*.json | jq '.metrics'
+cat results/batch-smoke/eval.json | jq '.metrics'
 ```
 
 ## Validation Goals
@@ -155,18 +156,19 @@ llm-memory-bench run \
   --provider openai \
   --model gpt-4o-mini \
   --batch \
-  --max-conversations 10
+  --max-conversations 10 \
+  --output results/batch-session/run.json
 
 # Output shows:
 # [1/10] sess_0517169e56bb (33 turns) [batch mode]
 #   done — 4 memories extracted, 45123 tokens
 
 # 2. Evaluate with exact matching
-llm-memory-bench evaluate results/run_*_alpsbench_batch.json \
+llm-memory-bench evaluate results/batch-session/run.json \
   --matcher exact
 
 # 3. Check results
-cat results/eval_*.json | jq '{
+cat results/batch-session/eval.json | jq '{
   f1: .metrics.extraction_f1,
   precision: .metrics.extraction_precision,
   recall: .metrics.extraction_recall,
@@ -224,7 +226,7 @@ cat results/eval_*.json | jq '{
 **Debug:**
 ```bash
 # Check what was extracted
-cat results/run_*.json | jq '.conversations[0].turns[] | select(.tool_calls) | .tool_calls[0].arguments'
+cat results/batch-session/run.json | jq '.conversations[0].turns[] | select(.tool_calls) | .tool_calls[0].arguments'
 
 # Should see AlpsBench-style memory items:
 # {"type": "direct", "label": "...", "value": "...", "confidence": 0.95}
@@ -236,7 +238,7 @@ cat results/run_*.json | jq '.conversations[0].turns[] | select(.tool_calls) | .
 ```bash
 # Look at raw model response (would need to add logging)
 # For now, check if tool_calls exist:
-cat results/run_*.json | jq '[.conversations[].turns[].tool_calls // [] | length] | add'
+cat results/batch-session/run.json | jq '[.conversations[].turns[].tool_calls // [] | length] | add'
 
 # Should be >0
 ```
