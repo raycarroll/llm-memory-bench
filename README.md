@@ -1,18 +1,37 @@
 # llm-memory-bench
 
-Benchmark LLM **proactive tool-calling judgment** — the ability to decide *when* to act without being explicitly asked.
+`llm-memory-bench` is a reproducible evaluation harness for agent memory
+systems. It helps answer a practical question: **does a memory setup make an
+agent more useful, and does it work in the runtime where we intend to use it?**
 
-Existing tool-calling benchmarks ([BFCL](https://gorilla.cs.berkeley.edu/leaderboard.html), [TaskBench](https://openreview.net/pdf?id=ZUbraGNpAq)) test structural complexity: can the model call the right function with the right arguments? But they test **reactive** tool use — the user asks a question, the model picks a tool. The hard part of real-world tool use is often **proactive judgment**: recognizing that something worth acting on just happened, with no explicit trigger.
+The unit being evaluated is not just an LLM. A run combines a model with a
+memory prompt, tool contract, memory setup, task dataset, and execution
+runtime. The harness lets you hold those inputs constant while comparing
+memory-system designs, prompts, models, and integrations.
 
-Memory extraction is a natural testbed for this. In a conversation, the user never says "save this to memory." They mention they're a data scientist, or that they prefer Python, or that there's a deploy freeze on Thursday. The model must recognize these as worth persisting, decide to call the memory tool unprompted, and do so at the right moment — all while ignoring the ~90% of turns that are noise.
+It separates three questions that are often conflated:
 
-This project uses conversations from [AlpsBench](https://huggingface.co/datasets/Cosineyx/Alpsbench) with human-verified ground-truth annotations, and tests LLMs against tool schemas and prompts inspired by real memory systems.
+- **Extraction:** does the agent identify information worth retaining in noisy
+  conversation, call the memory interface correctly, and produce memories that
+  match the ground truth?
+- **Value:** when memories are available on a later task, do they improve task
+  outcomes, reduce turns or tokens, or otherwise change the result? This uses
+  paired baseline-versus-memory trials.
+- **Integration:** does the real agent, memory backend, tools, lifecycle, and
+  verification path work together outside a simulated harness? The repository
+  includes containerised integrations and an OpenShift operational demo for
+  this purpose.
 
-**Experiments** (what you are measuring):
+Extraction uses annotated conversations from
+[AlpsBench](https://huggingface.co/datasets/Cosineyx/Alpsbench). Value runs use
+generated or curated scenarios and can also use τ²-bench or CL-Bench sources.
+The same experiment model can run against simulated memory tools, real
+containerised integrations, or the direct OpenShift demo.
 
-- **Extraction** — can the LLM identify implicit triggers in noisy conversation and call the memory tool proactively?
-- **Value** — do stored memories actually improve downstream task performance?
-- **Operational demo** — can paired agents diagnose and repair a live OpenShift workload, with and without MemoryHub?
+**What this project is not:** it is not a single memory product, a generic
+MCP/tool-calling leaderboard, or proof that a simulated tool call was persisted
+by a live backend. Simulated runs isolate model and prompt behaviour; real
+integration runs test the deployed memory stack.
 
 **Execution modes** (how you run them):
 
