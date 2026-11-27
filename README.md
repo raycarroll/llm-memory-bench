@@ -15,14 +15,17 @@ relevant experiment inputs constant. Real runtimes and integrations validate
 how results transfer beyond simulated tool execution; they are supporting
 paths for the two benchmark aims, not a third aim.
 
-Extraction supports both [AlpsBench](https://huggingface.co/datasets/Cosineyx/Alpsbench)
-and BFCL Memory conversations. AlpsBench marks which facts should be saved and
-where each fact appears in the conversation. BFCL Memory asks the agent to
-save facts before answering later questions. `llm-memory-bench` creates
-cumulative extraction labels by matching BFCL's answer source text to its
-prerequisite conversations; BFCL does not provide these labels directly.
-Results from the two datasets are not directly comparable.
-Value runs use generated or curated scenarios and can also use τ²-bench or
+**Extraction** supports two datasets:
+
+- **[AlpsBench](https://huggingface.co/datasets/Cosineyx/Alpsbench)** — marks
+  which facts should be saved and where each fact appears in the conversation.
+- **BFCL Memory** — asks the agent to save facts before answering later
+  questions. `llm-memory-bench` creates cumulative extraction labels by
+  matching BFCL's answer source text to its prerequisite conversations; BFCL
+  does not provide these labels directly. Results from the two datasets are
+  not directly comparable.
+
+**Value** uses generated or curated scenarios and can also use τ²-bench or
 CL-Bench sources.
 The same experiment model can run against simulated memory tools, real
 containerised integrations, or the direct OpenShift demo.
