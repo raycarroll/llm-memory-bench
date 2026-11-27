@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 import os
+from pathlib import Path
 import subprocess
 import time
 from typing import Any
@@ -20,6 +21,13 @@ class OpenShiftVerifier:
         self.timeout = oc_timeout_seconds
         self.context_env = str(spec.verification.get("context_env", "OPENSHIFT_CONTEXT"))
         self.context = os.getenv(self.context_env)
+        self.kubeconfig = os.getenv("KUBECONFIG")
+        self.service_account_dir = Path(
+            os.getenv(
+                "OPENSHIFT_SERVICE_ACCOUNT_DIR",
+                "/var/run/secrets/kubernetes.io/serviceaccount",
+            )
+        )
 
     def preflight(self) -> dict[str, Any]:
         return {"server": self._oc(["whoami", "--show-server"]).strip()}
@@ -183,10 +191,36 @@ class OpenShiftVerifier:
         return pods[0]
 
     def _oc(self, args: list[str]) -> str:
-        if not self.context:
-            raise RuntimeError(f"Set {self.context_env} to the intended OpenShift context")
+        command = ["oc"]
+        if self.kubeconfig:
+            command.extend(["--kubeconfig", self.kubeconfig])
+        if self.context:
+            command.extend(["--context", self.context])
+        else:
+            host = os.getenv("KUBERNETES_SERVICE_HOST")
+            port = os.getenv("KUBERNETES_SERVICE_PORT_HTTPS", "443")
+            token_path = self.service_account_dir / "token"
+            ca_path = self.service_account_dir / "ca.crt"
+            if not host or not token_path.is_file() or not ca_path.is_file():
+                raise RuntimeError(
+                    f"Set {self.context_env} with a kubeconfig, or provide the in-cluster "
+                    "service-account credentials"
+                )
+            token = token_path.read_text(encoding="utf-8").strip()
+            if not token:
+                raise RuntimeError(f"In-cluster service-account token is empty: {token_path}")
+            command.extend(
+                [
+                    "--server",
+                    f"https://{host}:{port}",
+                    "--token",
+                    token,
+                    "--certificate-authority",
+                    str(ca_path),
+                ]
+            )
         completed = subprocess.run(
-            ["oc", "--context", self.context, *args],
+            [*command, *args],
             capture_output=True,
             text=True,
             timeout=self.timeout,

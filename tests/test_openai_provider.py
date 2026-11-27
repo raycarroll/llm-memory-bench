@@ -82,3 +82,38 @@ def test_anthropic_provider_scopes_developer_context_per_request(monkeypatch):
         "name": "memoryhub_search",
         "disable_parallel_tool_use": True,
     }
+
+
+def test_anthropic_provider_serializes_auto_tool_choice(monkeypatch):
+    captured = {}
+
+    class FakeClient:
+        async def create(self, **kwargs):
+            captured.update(kwargs)
+            return SimpleNamespace(
+                content=[],
+                usage=SimpleNamespace(input_tokens=2, output_tokens=1),
+                model="test-model",
+            )
+
+        @property
+        def messages(self):
+            return SimpleNamespace(create=self.create)
+
+    monkeypatch.setattr("anthropic.AsyncAnthropic", lambda **kwargs: FakeClient())
+
+    provider = AnthropicProvider(model="test-model")
+    asyncio.run(
+        provider.generate(
+            messages=[{"role": "user", "content": "task"}],
+            tools=[{"name": "pods_get", "input_schema": {"type": "object"}}],
+            system="system context",
+            tool_choice="auto",
+            disable_parallel_tool_calls=True,
+        )
+    )
+
+    assert captured["tool_choice"] == {
+        "type": "auto",
+        "disable_parallel_tool_use": True,
+    }

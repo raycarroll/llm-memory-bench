@@ -64,7 +64,9 @@ class AnthropicProvider(LLMProvider):
             )
             if tools:
                 kwargs["tools"] = self._to_anthropic_tools(tools)
-                if tool_choice:
+                if tool_choice == "auto":
+                    kwargs["tool_choice"] = {"type": "auto"}
+                elif tool_choice:
                     kwargs["tool_choice"] = {"type": "tool", "name": tool_choice}
                 elif disable_parallel_tool_calls:
                     kwargs["tool_choice"] = {"type": "auto"}

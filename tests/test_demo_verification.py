@@ -1,3 +1,5 @@
+from types import SimpleNamespace
+
 import pytest
 
 from llm_memory_bench.demo import OpenShiftVerifier, load_demo_spec
@@ -11,12 +13,43 @@ def test_selector_matching_uses_actual_labels():
     assert not OpenShiftVerifier._selector_matches({"matchLabels": {"app": "frontend"}}, {"app": "frontend-v1"})
 
 
-def test_oc_requires_explicit_context(monkeypatch):
+def test_oc_uses_in_cluster_service_account_when_context_is_missing(monkeypatch, tmp_path):
     verifier = OpenShiftVerifier(SPEC)
     verifier.context = None
     monkeypatch.delenv("OPENSHIFT_CONTEXT", raising=False)
+    monkeypatch.setenv("KUBERNETES_SERVICE_HOST", "10.0.0.1")
+    monkeypatch.setenv("KUBERNETES_SERVICE_PORT_HTTPS", "6443")
+    (tmp_path / "token").write_text("service-account-token")
+    (tmp_path / "ca.crt").write_text("ca")
+    verifier.service_account_dir = tmp_path
+    captured = {}
 
-    with pytest.raises(RuntimeError, match="OPENSHIFT_CONTEXT"):
+    def fake_run(command, **kwargs):
+        captured["command"] = command
+        return SimpleNamespace(returncode=0, stdout="ok", stderr="")
+
+    monkeypatch.setattr("subprocess.run", fake_run)
+
+    assert verifier._oc(["whoami"]) == "ok"
+    assert captured["command"] == [
+        "oc",
+        "--server",
+        "https://10.0.0.1:6443",
+        "--token",
+        "service-account-token",
+        "--certificate-authority",
+        str(tmp_path / "ca.crt"),
+        "whoami",
+    ]
+
+
+def test_oc_requires_context_or_in_cluster_credentials(monkeypatch, tmp_path):
+    verifier = OpenShiftVerifier(SPEC)
+    verifier.context = None
+    verifier.service_account_dir = tmp_path
+    monkeypatch.delenv("KUBERNETES_SERVICE_HOST", raising=False)
+
+    with pytest.raises(RuntimeError, match="kubeconfig.*service-account"):
         verifier._oc(["whoami"])
 
 
