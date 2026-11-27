@@ -18,12 +18,22 @@ paths for the two benchmark aims, not a third aim.
 Extraction supports both [AlpsBench](https://huggingface.co/datasets/Cosineyx/Alpsbench)
 and BFCL Memory conversations. AlpsBench provides explicit memory annotations
 linked to source turns, making it the clearest input for white-box storage
-metrics. BFCL Memory also presents proactive storage opportunities in natural
-prerequisite conversations, but its official task evaluates end-to-end
-retrieval after storage. This harness can derive cumulative extraction labels
-from BFCL's source and answer data, but those labels are reconstructed and are
-not equivalent to AlpsBench's native annotations. Value runs use generated or
-curated scenarios and can also use τ²-bench or CL-Bench sources.
+metrics.
+
+BFCL Memory has two stages. First, the agent reads prerequisite conversations
+and must decide what to store, even though nobody explicitly says “remember
+this.” Later, the agent receives a question that depends on those stored facts.
+BFCL's official score checks only whether the final answer is correct. It does
+not separately tell us whether a failure came from the storage decision, the
+memory backend, or retrieval.
+
+This harness can still use BFCL Memory for exploratory extraction analysis. Its
+converter matches BFCL answer source text to the released conversations and
+turns the matches into cumulative ground truth. Those are labels inferred by
+this repository, not BFCL's native turn-level storage annotations, so their
+precision/recall results should not be compared directly with AlpsBench's.
+Value runs use generated or curated scenarios and can also use τ²-bench or
+CL-Bench sources.
 The same experiment model can run against simulated memory tools, real
 containerised integrations, or the direct OpenShift demo.
 
@@ -658,11 +668,12 @@ llm-memory-bench convert --source alpsbench --all-languages
 ### BFCL Memory extraction and retrieval data
 
 BFCL Memory contains five domain scenarios (`student`, `customer`, `finance`,
-`healthcare`, and `notetaker`). Its prerequisite conversations contain facts
-that the agent must proactively retain, followed by explicit questions that
-test whether those facts can be retrieved. BFCL's own score is end-to-end
-answer accuracy, so it cannot by itself distinguish a storage failure from a
-retrieval failure.
+`healthcare`, and `notetaker`). Each scenario provides prerequisite
+conversations followed by questions that depend on information from those
+conversations. The agent must store useful facts proactively during the first
+stage; the official BFCL evaluation then scores the final answer in the second
+stage. Because that score is end-to-end, it cannot by itself distinguish a
+storage failure from a retrieval failure.
 
 The repository can convert the released BFCL Memory files into cumulative
 datasets for exploratory extraction analysis. This requires a clone of the
@@ -677,10 +688,11 @@ llm-memory-bench convert \
   --output datasets/converted/bfcl
 ```
 
-The converter reconstructs cumulative ground truth by matching BFCL answer
-source text to the released prerequisite conversations. Use those results as
-derived cumulative analysis; they are not directly comparable to AlpsBench's
-per-turn annotations or noise-resistance metrics. See
+The converter reconstructs cumulative ground truth by matching each BFCL
+answer's source text to the released prerequisite conversations. These are
+inferred labels created by this repository, not native BFCL storage labels.
+Use the results for derived cumulative analysis; do not compare them directly
+with AlpsBench's per-turn annotations or noise-resistance metrics. See
 [docs/bfcl-memory-category.md](docs/bfcl-memory-category.md) and
 [docs/bfcl-data-issue.md](docs/bfcl-data-issue.md) for the distinction between
 BFCL's end-to-end score and this harness's storage metrics.
