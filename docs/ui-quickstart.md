@@ -1,10 +1,21 @@
 # Benchmark UI
 
 The optional Streamlit UI defines runs using the same configuration model as
-the application service layer. It presents extraction and value as the two
-experiment families, with simulated-tool or real-system/containerised runtimes where supported.
-τ²-bench is selectable as a value scenario source. UI-launched results are
-written to `results/ui/`.
+the application service layer. It presents the current experiment families and
+selects the runtime and configuration options that apply to each one.
+UI-launched results are written to `results/ui/`.
+
+| UI experiment | Runtime | Main setup |
+|---|---|---|
+| Extraction | Simulated-tool or real container | Dataset, provider, model, memory system |
+| Value | Simulated-tool or real container | Scenario file, memory mode, evaluator |
+| τ² Value | Pinned container | Official task IDs and memory plan |
+| CL-Bench Value | External worker or container | `clbench-setup` checkout/runtime |
+| OpenShift demo | Direct API | OpenShift namespaces, MCP endpoints, MemoryHub |
+
+The UI is a control layer, not a separate benchmark implementation. It submits
+the same `RunSpec` used by the application service and persists the resulting
+artifacts under `results/ui/`.
 
 Install the UI dependency and start it from the repository root:
 
@@ -43,6 +54,30 @@ It is τ²-derived rather than an official τ² dataset reproduction. The
 same dataset can also be run without the UI by selecting it as the value
 dataset path and using the existing value benchmark command.
 
+## OpenShift operational demo
+
+Select **OpenShift demo** under **Benchmark**. The demo runs paired memory and
+baseline agents against the configured `scenarios/openshift/*.yaml` scenario.
+The memory side can search MemoryHub; the baseline cannot. Both sides use
+separate Kubernetes MCP endpoints and namespaces.
+
+Before starting the run, deploy the resources described by:
+
+- `deploy/kubernetes-mcp-sides.yaml` — side-specific MCP servers and RBAC.
+- `deploy/openshift-demo.yaml` — verifier RBAC, UI Deployment, Service, and Route.
+- `scenarios/openshift/network-policy.yaml` — the scenario contract and fixture.
+
+The verifier uses the pod's ServiceAccount credentials in an in-cluster
+deployment. For local execution, set `OPENSHIFT_CONTEXT` and `KUBECONFIG` to a
+context that can access both demo namespaces. Set `MEMORYHUB_MCP_URL` and
+`MEMORYHUB_API_KEY` for the memory side. The UI's **Extraction preparation run**
+option performs a write-enabled preparation run, verifies recovery, then resets
+the fixture before the paired comparison.
+
+This is a live-cluster experiment; it is not a substitute for the simulated
+extraction/value commands and should not be run against a shared production
+namespace.
+
 ## τ² Value experiments
 
 Select `τ² Value` under `Benchmark`. The UI runs the real pinned τ² adapter in
@@ -69,6 +104,22 @@ arms, the effective system prompts, reward details, and the chronological
 native τ² conversation including tool calls. Each run writes timestamped
 artifacts under `results/ui/`: the UI wrapper JSON, raw wrapper JSON, log, and
 native τ² JSON.
+
+## CL-Bench Value experiments
+
+Select **CL-Bench Value** under **Benchmark**. CL-Bench is optional and is not
+installed by the normal package setup. Run the one-time setup from the
+repository root first:
+
+```bash
+llm-memory-bench clbench-setup
+```
+
+The UI expects the checkout at `.cl-bench` by default and uses its `.venv/bin/python`
+unless another interpreter is supplied. The first adapter slice supports the
+`database_exploration` task. Choose the memory setup mode deliberately:
+`none`, `seeded`, or `capture_first`. See [clbench.md](clbench.md) for the
+native lifecycle and its current limitations.
 
 ## Claude Code + remote MemoryHub
 

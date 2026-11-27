@@ -2,8 +2,18 @@
 
 ## Core Concepts
 
-- **[architecture.md](architecture.md)** - System design, benchmark modes (simulated-tool vs real-system/containerised), data flow diagrams
+- **[architecture.md](architecture.md)** - System design, experiment families, runtimes, and data flow diagrams
 - **[metrics.md](metrics.md)** - Metric definitions, formulas, interpretation guide, comparison to BFCL
+
+## Getting Started
+
+- **[../README.md](../README.md)** - Installation, experiment selection, and CLI quick starts
+- **[ui-quickstart.md](ui-quickstart.md)** - Streamlit, τ², CL-Bench, container, MemoryHub, and OpenShift setup
+- **[tau2-value.md](tau2-value.md)** - Official τ² value runs and container execution
+- **[clbench.md](clbench.md)** - Optional CL-Bench setup and value runs
+- **[container-integration-profiles.md](container-integration-profiles.md)** - Real agent + MemoryHub profile model
+- **[prompt-comparison.md](prompt-comparison.md)** - Comparing simulated memory prompts
+- **[openshift-demo-transplant-plan.md](openshift-demo-transplant-plan.md)** - OpenShift demo deployment and integration design
 
 ## Baselines & Comparisons
 

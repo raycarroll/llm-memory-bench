@@ -67,10 +67,10 @@ Only storage tool:
 
 ```bash
 # After the fix, search calls won't appear in evaluation output
-llm-memory-bench evaluate results/run_*.json --matcher embedding
+llm-memory-bench evaluate results/run.json --matcher embedding
 
 # Check that noise turns with only search calls show 0 false positives
-cat results/eval_*.json | jq '.conversations[0].turn_evaluations[] | select(.is_noise_turn == true)'
+cat results/eval.json | jq '.conversations[0].turn_evaluations[] | select(.is_noise_turn == true)'
 ```
 
 ## Impact on Metrics

@@ -21,8 +21,8 @@ graph LR
 | Dimension | Extraction Track | Value Track |
 |-----------|-----------------|-------------|
 | **Question** | When should the agent store? | Does memory improve tasks? |
-| **Dataset** | AlpsBench Task 1 (per-turn ground truth) | AlpsBench Task 2 → generated scenarios |
-| **Commands** | `run`, `evaluate`, `compare` | `value-generate*`, `value-run`, `value-evaluate` |
+| **Dataset** | AlpsBench Task 1 (cumulative ground truth) | AlpsBench Task 2 → generated scenarios |
+| **Commands** | `run`, `evaluate`, `compare` | `value-generate*`, `value-run`, `value-visualize` |
 | **Metrics** | Precision, recall, noise resistance | Quality delta, token efficiency, turn compression |
 | **Ground truth** | Which facts to store at each turn | Whether response uses memory effectively |
 
@@ -92,7 +92,8 @@ Adapters in `../adapters/` that start with `alpsbench_value*` are also part of v
 
 ## Output
 
-Value runs produce different output than extraction runs:
+Value runs produce different output than extraction runs. `value-run` evaluates
+the paired trials during execution; use `value-visualize` for an HTML trace.
 
 **Extraction output:**
 ```json
@@ -149,10 +150,15 @@ llm-memory-bench value-run \
   --max-turns 5
 
 # 3. View results
-# value-run evaluates the paired trials and writes JSON; add --visualize for HTML
+llm-memory-bench value-visualize results/value_*.json
 ```
 
-The default provider and model are OpenAI `gpt-4o`. Set `OPENAI_API_KEY` before running, or override them with `--provider` and `--model`.
+The default provider and model are OpenAI `gpt-4o`. Set `OPENAI_API_KEY` before
+running, or override them with `--provider` and `--model`.
+
+The default `--memory-setup-mode` is `none`. Use `seeded` to give the memory arm
+the scenario's declared memory bank, or `capture_first` to hand baseline-captured
+writes to the memory arm.
 
 During a run, the outcome judge evaluates each agent response. The trial stops early when all declared outcomes pass. Use `--no-judge-during-run` to disable this completion check while retaining the final evaluation.
 

@@ -26,7 +26,8 @@ llm-memory-bench run \
   --system alpsbench_batch \
   --provider openai \
   --model gpt-4o \
-  --max-conversations 10
+  --max-conversations 10 \
+  --output results/alpsbench-task1/run.json
 ```
 
 **What this does:**
@@ -39,7 +40,7 @@ llm-memory-bench run \
 
 ```bash
 # For per-turn dataset, evaluate cumulatively
-llm-memory-bench evaluate results/run_*_alpsbench_batch.json \
+llm-memory-bench evaluate results/alpsbench-task1/run.json \
   --matcher exact \
   --dataset datasets/converted/alpsbench-task1.yaml
 ```
@@ -143,13 +144,15 @@ Once validated, compare:
 
 ```bash
 # Batch extraction (AlpsBench-style)
-llm-memory-bench run --system alpsbench_batch --max-conversations 50
-llm-memory-bench evaluate results/run_*.json --matcher exact
+llm-memory-bench run --system alpsbench_batch --max-conversations 50 \
+  --output results/alpsbench-batch/run.json
+llm-memory-bench evaluate results/alpsbench-batch/run.json --matcher exact
 # Expected: ~33% F1
 
 # Proactive tool-calling (our methodology)
-llm-memory-bench run --system simple --max-conversations 50
-llm-memory-bench evaluate results/run_*.json --matcher embedding
+llm-memory-bench run --system simple --max-conversations 50 \
+  --output results/simple/run.json
+llm-memory-bench evaluate results/simple/run.json --matcher embedding
 # Expected: ~11% F1
 
 # Difference: 33% - 11% = 22% = cost of proactive real-time judgment
@@ -169,14 +172,15 @@ llm-memory-bench run \
   --system alpsbench_batch \
   --provider openai \
   --model gpt-4o-mini \
-  --max-conversations 10
+  --max-conversations 10 \
+  --output results/alpsbench-validation/run.json
 
 # 2. Evaluate with exact matching
-llm-memory-bench evaluate results/run_*_alpsbench_batch.json \
+llm-memory-bench evaluate results/alpsbench-validation/run.json \
   --matcher exact
 
 # 3. Check F1 score
-cat results/eval_*.json | jq '.metrics.extraction_f1'
+cat results/alpsbench-validation/eval.json | jq '.metrics.extraction_f1'
 
 # Expected: ~0.30-0.35 (30-35%)
 # If close to AlpsBench's 33.69%: VALIDATED ✓
@@ -194,7 +198,7 @@ cat results/eval_*.json | jq '.metrics.extraction_f1'
 **Debug:**
 ```bash
 # Check what was actually stored
-cat results/run_*.json | jq '.conversations[0].turns[] | select(.tool_calls) | .tool_calls'
+cat results/alpsbench-validation/run.json | jq '.conversations[0].turns[] | select(.tool_calls) | .tool_calls'
 
 # Check ground truth
 cat datasets/converted/alpsbench-task1.yaml | grep "should_store:" -A 3 | head -20
@@ -209,7 +213,7 @@ cat datasets/converted/alpsbench-task1.yaml | grep "should_store:" -A 3 | head -
 **Debug:**
 ```bash
 # Check matcher verdicts
-cat results/eval_*.json | jq '.conversations[0].turns[].fact_matches[] | {expected, verdict}'
+cat results/alpsbench-validation/eval.json | jq '.conversations[0].turns[].fact_matches[] | {expected, verdict}'
 ```
 
 ## References

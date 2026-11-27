@@ -1,222 +1,115 @@
-# Value Benchmarking - Quick Start
+# Value benchmark quick start
 
-**Goal:** Show quantitative evidence that memory improves task outcomes
+The value benchmark runs paired baseline and memory arms against the same task
+scenarios. It measures whether memory changes task quality, turns, and token
+use. It is separate from extraction, which measures whether the agent stores
+the right facts.
 
-**Status:** ✅ Scenario generation working | ⏳ Evaluation pipeline next
+## Fastest local run
 
----
-
-## What You Have Now
-
-### Generated Scenarios (50 total)
+Use the checked-in goal scenario for a smoke test:
 
 ```bash
-scenarios/quick-demo/alpsbench-value-targeted.yaml
+pip install -e .
+export OPENAI_API_KEY="..."
+
+llm-memory-bench value-run \
+  --scenarios scenarios/quick-demo-goal.yaml \
+  --system memoryhub \
+  --provider openai \
+  --model gpt-4o \
+  --max-scenarios 1 \
+  --output results/value-smoke.json
 ```
 
-**Distribution:**
-- 36 preference scenarios ("prefers X" → recommendations)
-- 6 constraint scenarios (budget/time limits → suggestions)
-- 4 location scenarios ("lives in X" → local recommendations)
-- 3 dietary scenarios (vegetarian/allergies → food)
-- 1 skill scenario (proficiency level → code/explanations)
+The command runs the paired experiment and evaluates outcomes during the run by
+default. Inspect the result directly or generate an HTML trace:
 
-### Example Scenario Structure
-
-```yaml
-id: sess_0124ac96a301_constraint_0
-memory_bank:
-  - fact: "Prefers maximum difficulty (10/10) in custom game scenarios"
-    category: direct
-task_prompt: "Recommend a laptop for work"
-outcomes:
-  - id: budget_constraint
-    statement: "The recommendation stays within the user's budget constraint."
-  - id: specific_models
-    statement: "The response names specific models within the budget."
-  - id: no_redundant_question
-    statement: "The response does not ask for the user's budget again."
-value_category: constraint
+```bash
+llm-memory-bench value-visualize results/value-smoke.json
 ```
 
----
+There is no separate `value-evaluate` or `value-compare` command. Use
+`value-visualize` for one result and the JSON output for downstream analysis.
 
-## Next Steps to Show Value
+## Choose the memory setup
 
-### 1. Run Paired Trials (baseline vs memory)
+`--memory-setup-mode` controls the initial memory state:
+
+- `none` — default; both arms start without declared memories.
+- `seeded` — the memory arm receives the scenario's declared `memory_bank`;
+  the baseline remains cold.
+- `capture_first` — the baseline writes memories first, then the memory arm
+  receives the captured snapshot.
+
+For a declared-memory comparison:
 
 ```bash
 llm-memory-bench value-run \
-  --scenarios scenarios/quick-demo/alpsbench-value-targeted.yaml \
-  --system simple \
-  --mode prompt \
-  --max-turns 5 \
+  --scenarios scenarios/quick-demo-goal.yaml \
+  --system memoryhub \
+  --provider openai \
+  --model gpt-4o \
+  --memory-setup-mode seeded \
   --max-scenarios 10 \
-  --provider anthropic \
-  --model claude-sonnet-4-20250514
+  --output results/value-seeded.json
 ```
 
-**This will:**
-- Run each scenario twice: once WITHOUT memory (baseline), once WITH
-- Record tokens used, turns taken, final responses
-- Stop after 10 scenarios for quick testing
+The `--mode` option controls how the simulated adapter exposes memory:
 
-**Expected outputs:**
-```
-results/value_TIMESTAMP_anthropic_claude-sonnet-4-20250514_simple.json
-```
+- `prompt` — inject memory into the prompt.
+- `tool` — expose a recall tool.
+- `both` — use prompt injection and a recall tool.
 
-### 2. Evaluate Quality
+## Generate scenarios
+
+Generate LLM-authored scenarios from AlpsBench:
 
 ```bash
-llm-memory-bench value-evaluate \
-  results/value_*.json \
-  --judge-model claude-sonnet-4-20250514
-```
-
-**This will:**
-- Use LLM judge to score response quality against rubrics
-- Compute metrics: quality_delta, token_efficiency, turn_compression
-- Show which scenarios memory helped vs hurt
-
-### 3. Generate Report
-
-```bash
-llm-memory-bench value-compare results/value_eval_*.json
-```
-
-**Shows:**
-- Aggregate metrics across all scenarios
-- Per-category breakdown (preference vs constraint vs location)
-- Cost analysis (effective token savings after memory overhead)
-
----
-
-## What Metrics You'll Get
-
-### Quality
-- **quality_delta**: How much better (+) or worse (-) with memory
-- **scenarios_quality_improved**: Count where memory helped
-- **scenarios_quality_degraded**: Count where memory hurt
-
-### Efficiency
-- **token_efficiency_ratio**: baseline_tokens / memory_tokens (>1.0 = savings)
-- **turn_compression**: baseline_turns / memory_turns (>1.0 = fewer turns)
-- **effective_token_savings**: Net savings after memory overhead
-
-### ROI
-- **value_per_token**: quality_delta / memory_overhead_tokens
-
----
-
-## Expected Results (Hypothesis)
-
-Based on scenario design:
-
-| Category | Expected Quality Delta | Expected Token Savings | Why |
-|----------|----------------------|----------------------|-----|
-| **dietary** | +0.3 to +0.5 | 30-50% | Baseline must ask OR guess wrong |
-| **location** | +0.2 to +0.4 | 20-40% | Baseline gives generic chains vs local spots |
-| **preference** | +0.1 to +0.3 | 10-30% | Baseline hedges, memory enables specificity |
-| **constraint** | +0.2 to +0.4 | 20-40% | Baseline asks about budget/time |
-| **skill** | +0.3 to +0.5 | 20-40% | Baseline asks skill level OR over/under-explains |
-
-**Overall expectation:** 60-80% of scenarios show positive quality_delta, 50-70% show net token savings
-
----
-
-## Failure Modes to Watch
-
-When quality_delta < 0 (memory hurts):
-
-1. **Irrelevant memory applied** - "prefers synth percussion" → laptop recommendation
-2. **Over-confident hallucination** - Agent invents details beyond memory
-3. **Stale preference** - Memory contradicts current request
-4. **Wrong retrieval** - Noise memory used instead of signal
-
-Track these via the failure analysis in evaluator (TODO: implement)
-
----
-
-## Commands Summary
-
-```bash
-# Generate scenarios (done)
-llm-memory-bench value-generate-quick \
+llm-memory-bench value-generate \
+  --source alpsbench \
+  --output scenarios/generated \
   --max-scenarios 50 \
-  --output scenarios/quick-demo
+  --provider openai \
+  --model gpt-4o
+```
 
-# Run trials
-llm-memory-bench value-run \
-  --scenarios scenarios/quick-demo/alpsbench-value-targeted.yaml \
+For a fast template-based demo without an LLM generation call:
+
+```bash
+llm-memory-bench value-generate-quick \
+  --output scenarios/quick-demo \
   --max-scenarios 10
-
-# Evaluate (TODO: implement value-evaluate command)
-# For now, outputs go to results/ for manual inspection
-
-# Scale up
-llm-memory-bench value-run \
-  --scenarios scenarios/quick-demo/alpsbench-value-targeted.yaml \
-  --max-scenarios 50  # All scenarios
 ```
 
----
+Pass the generated YAML directory or file to `value-run` with
+`--scenarios`.
 
-## File Locations
+## Real agent integration
 
-```
-llm_memory_bench/
-├── scenarios/
-│   └── quick-demo/
-│       └── alpsbench-value-targeted.yaml  # ✅ Generated
-│
-├── results/
-│   └── value_*.json                       # ⏳ Run trials to create
-│
-├── src/llm_memory_bench/value/
-│   ├── generator_targeted.py              # ✅ Template-based generation
-│   ├── simulated_tool_value_runner.py     # ✅ Paired trial execution
-│   ├── evaluator.py                       # ⏳ LLM judge (exists, needs testing)
-│   └── metrics.py                         # ✅ Value metric computation
-│
-└── docs/
-    └── value-quick-start.md               # This file
+To test a real Claude Code + memory integration in a container, use
+`container-value-run` instead of `value-run`:
+
+```bash
+llm-memory-bench container-value-run \
+  --config configs/claude-memoryhub-remote.yaml \
+  --scenarios scenarios/test-value.yaml \
+  --max-scenarios 1 \
+  --user-sim-provider openai \
+  --judge-provider openai \
+  --output results/container-value-smoke.json
 ```
 
----
+This requires Docker or Podman and the credentials referenced by the selected
+container config. See [container-integration-profiles.md](container-integration-profiles.md)
+for isolation and profile limitations.
 
-## Research Questions Answered
+## Other value sources
 
-✅ **"What scenarios demonstrate value?"**  
-→ Preferences, constraints, location, dietary, skill level
+- **τ²-bench:** use `tau2-value-run` or `tau2-container-run`; see
+  [tau2-value.md](tau2-value.md).
+- **CL-Bench:** run `clbench-setup`, then `clbench-value-run`; see
+  [clbench.md](clbench.md).
 
-✅ **"What data do we need?"**  
-→ AlpsBench Task 2 memories + template tasks
-
-✅ **"How to show value quantitatively?"**  
-→ Quality delta, token efficiency, turn compression
-
-⏳ **"Does memory actually help?"**  
-→ Run trials to find out
-
----
-
-## Next Immediate Actions
-
-1. **Test the pipeline** on 10 scenarios:
-   ```bash
-   llm-memory-bench value-run \
-     --scenarios scenarios/quick-demo/alpsbench-value-targeted.yaml \
-     --max-scenarios 10 \
-     --max-turns 3
-   ```
-
-2. **Inspect results** manually before full run
-
-3. **Fix any issues** in simulated_tool_value_runner.py or evaluator.py
-
-4. **Scale to 50 scenarios** once validated
-
-5. **Add value-evaluate command** if missing (check CLI)
-
-6. **Generate first numbers** to share
+The Streamlit UI exposes the same value sources and provides task selectors and
+result panels. See [ui-quickstart.md](ui-quickstart.md).

@@ -153,4 +153,4 @@ But GPT-4o missed:
 
 4. **Compare to baseline:**
    - What does Claude get?
-   - What does `bfcl_baseline` system get?
+   - What does the `simple` system get as a minimal-prompt baseline?

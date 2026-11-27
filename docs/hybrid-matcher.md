@@ -34,7 +34,7 @@ This reduces LLM calls by 60-80% while fixing embedding matcher's false negative
 
 ```bash
 llm-memory-bench evaluate \
-  results/run_*.json \
+  results/run.json \
   --matcher hybrid \
   --judge-provider anthropic \
   --judge-model claude-sonnet-4-20250514
@@ -173,4 +173,4 @@ Possible enhancements:
 
 - [Embedding Matcher](../src/llm_memory_bench/matchers/embedding.py) - Fast local similarity
 - [LLM Matcher](../src/llm_memory_bench/matchers/llm.py) - Semantic judgment
-- [Evaluation Guide](evaluation.md) - How evaluation works
+- [Metrics Guide](metrics.md) - How evaluation works
