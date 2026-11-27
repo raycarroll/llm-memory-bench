@@ -1,27 +1,19 @@
 # llm-memory-bench
 
 `llm-memory-bench` is a reproducible evaluation harness for agent memory
-systems. It helps answer a practical question: **does a memory setup make an
-agent more useful, and does it work in the runtime where we intend to use it?**
+systems. It supports two related but separate questions:
 
-The unit being evaluated is not just an LLM. A run combines a model with a
-memory prompt, tool contract, memory setup, task dataset, and execution
-runtime. The harness lets you hold those inputs constant while comparing
-memory-system designs, prompts, models, and integrations.
+1. **Extraction:** how well do agents and models proactively identify and
+   store useful memories from interactions?
+2. **Value:** how much do those memories improve downstream tasks, including
+   functional, personalisation, and domain-specific workflows?
 
-It has two related but separate benchmark aims:
-
-- **Extraction:** does the agent identify information worth retaining in noisy
-  conversation, call the memory interface correctly, and produce memories that
-  match the ground truth?
-- **Value:** when memories are available on a later task, do they improve task
-  outcomes, reduce turns or tokens, or otherwise change the result? This uses
-  paired baseline-versus-memory trials across contexts such as functional
-  tasks, personalisation, and domain-specific workflows.
-
-The repository also includes **integration support**: containerised
-integrations and an OpenShift operational demo. These are execution and
-validation paths for the two aims above, not a third benchmark objective.
+A run evaluates a model, memory prompt and tool contract, memory setup, task
+dataset, and execution runtime together. The harness lets you compare
+memory-system designs, prompts, models, and integrations while keeping the
+relevant experiment inputs constant. Real runtimes and integrations validate
+how results transfer beyond simulated tool execution; they are supporting
+paths for the two benchmark aims, not a third aim.
 
 Extraction uses annotated conversations from
 [AlpsBench](https://huggingface.co/datasets/Cosineyx/Alpsbench). Value runs use
