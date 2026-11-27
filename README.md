@@ -25,8 +25,14 @@ paths for the two benchmark aims, not a third aim.
   does not provide these labels directly. Results from the two datasets are
   not directly comparable.
 
-**Value** uses generated or curated scenarios and can also use τ²-bench or
-CL-Bench sources.
+**Value** evaluates whether memory improves a downstream task using:
+
+- **Custom, generated, or curated scenarios** — including functional,
+  personalisation, and domain-specific tasks.
+- **τ²-bench and CL-Bench** — additional task sources with their own runtimes.
+- **OpenShift** — a live operational value/integration scenario comparing
+  paired agents with and without MemoryHub.
+
 The same experiment model can run against simulated memory tools, real
 containerised integrations, or the direct OpenShift demo.
 
