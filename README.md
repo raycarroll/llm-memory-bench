@@ -15,9 +15,15 @@ relevant experiment inputs constant. Real runtimes and integrations validate
 how results transfer beyond simulated tool execution; they are supporting
 paths for the two benchmark aims, not a third aim.
 
-Extraction uses annotated conversations from
-[AlpsBench](https://huggingface.co/datasets/Cosineyx/Alpsbench). Value runs use
-generated or curated scenarios and can also use τ²-bench or CL-Bench sources.
+Extraction supports both [AlpsBench](https://huggingface.co/datasets/Cosineyx/Alpsbench)
+and BFCL Memory conversations. AlpsBench provides explicit memory annotations
+linked to source turns, making it the clearest input for white-box storage
+metrics. BFCL Memory also presents proactive storage opportunities in natural
+prerequisite conversations, but its official task evaluates end-to-end
+retrieval after storage. This harness can derive cumulative extraction labels
+from BFCL's source and answer data, but those labels are reconstructed and are
+not equivalent to AlpsBench's native annotations. Value runs use generated or
+curated scenarios and can also use τ²-bench or CL-Bench sources.
 The same experiment model can run against simulated memory tools, real
 containerised integrations, or the direct OpenShift demo.
 
@@ -628,9 +634,12 @@ llm-memory-bench compare path/to/eval-one.json path/to/eval-two.json
 
 Prints a side-by-side table of all metrics across evaluations, labeled by provider/model/system. Can also compare run files directly (without evaluation), but metrics will be limited.
 
-## Dataset
+## Datasets
 
-Uses [AlpsBench](https://huggingface.co/datasets/Cosineyx/Alpsbench) — conversations with human-verified memory items linked to source utterances.
+### AlpsBench extraction data
+
+[AlpsBench](https://huggingface.co/datasets/Cosineyx/Alpsbench) provides
+conversations with human-verified memory items linked to source utterances.
 
 - **Task 1 (Extraction):** Given a conversation, identify which facts to store
 - **Task 2 (Updating):** Given a conversation and existing memories, identify new or updated facts
@@ -645,6 +654,36 @@ llm-memory-bench convert --source alpsbench --max-conversations 10
 # Include all languages
 llm-memory-bench convert --source alpsbench --all-languages
 ```
+
+### BFCL Memory extraction and retrieval data
+
+BFCL Memory contains five domain scenarios (`student`, `customer`, `finance`,
+`healthcare`, and `notetaker`). Its prerequisite conversations contain facts
+that the agent must proactively retain, followed by explicit questions that
+test whether those facts can be retrieved. BFCL's own score is end-to-end
+answer accuracy, so it cannot by itself distinguish a storage failure from a
+retrieval failure.
+
+The repository can convert the released BFCL Memory files into cumulative
+datasets for exploratory extraction analysis. This requires a clone of the
+BFCL/Gorilla repository:
+
+```bash
+git clone https://github.com/ShishirPatil/gorilla.git
+
+llm-memory-bench convert \
+  --source bfcl-memory \
+  --bfcl-repo /path/to/gorilla \
+  --output datasets/converted/bfcl
+```
+
+The converter reconstructs cumulative ground truth by matching BFCL answer
+source text to the released prerequisite conversations. Use those results as
+derived cumulative analysis; they are not directly comparable to AlpsBench's
+per-turn annotations or noise-resistance metrics. See
+[docs/bfcl-memory-category.md](docs/bfcl-memory-category.md) and
+[docs/bfcl-data-issue.md](docs/bfcl-data-issue.md) for the distinction between
+BFCL's end-to-end score and this harness's storage metrics.
 
 ## Providers
 
