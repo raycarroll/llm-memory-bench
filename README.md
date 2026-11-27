@@ -9,18 +9,19 @@ memory prompt, tool contract, memory setup, task dataset, and execution
 runtime. The harness lets you hold those inputs constant while comparing
 memory-system designs, prompts, models, and integrations.
 
-It separates three questions that are often conflated:
+It has two related but separate benchmark aims:
 
 - **Extraction:** does the agent identify information worth retaining in noisy
   conversation, call the memory interface correctly, and produce memories that
   match the ground truth?
 - **Value:** when memories are available on a later task, do they improve task
   outcomes, reduce turns or tokens, or otherwise change the result? This uses
-  paired baseline-versus-memory trials.
-- **Integration:** does the real agent, memory backend, tools, lifecycle, and
-  verification path work together outside a simulated harness? The repository
-  includes containerised integrations and an OpenShift operational demo for
-  this purpose.
+  paired baseline-versus-memory trials across contexts such as functional
+  tasks, personalisation, and domain-specific workflows.
+
+The repository also includes **integration support**: containerised
+integrations and an OpenShift operational demo. These are execution and
+validation paths for the two aims above, not a third benchmark objective.
 
 Extraction uses annotated conversations from
 [AlpsBench](https://huggingface.co/datasets/Cosineyx/Alpsbench). Value runs use
@@ -46,15 +47,14 @@ simulated-tool and containerised execution are runtimes; τ² and CL-Bench are
 additional value sources; and the OpenShift demo has its own live-cluster
 runtime.
 
-| Experiment | Main entry point | What it needs |
+| Benchmark track or supporting path | Main entry point | What it needs |
 |---|---|---|
 | Extraction | `run` → `evaluate` | Provider API key; AlpsBench conversion |
-| Simulated value | `value-generate`/`value-run` | Provider API keys; scenario YAML |
-| Real extraction | `bench` | Docker/Podman; container config |
-| Real value | `container-value-run` | Docker/Podman; container config and scenarios |
-| τ² value | `tau2-value-run` or `tau2-container-run` | τ² data/runtime, or the pinned container |
-| CL-Bench value | `clbench-setup` → `clbench-value-run` | Optional Python 3.13 checkout/runtime |
-| OpenShift demo | Streamlit UI, select **OpenShift demo** | OpenShift cluster, MCP services, `oc`, MemoryHub |
+| Value: local scenarios | `value-generate`/`value-run` | Provider API keys; scenario YAML |
+| Value: τ² source | `tau2-value-run` or `tau2-container-run` | τ² data/runtime, or the pinned container |
+| Value: CL-Bench source | `clbench-setup` → `clbench-value-run` | Optional Python 3.13 checkout/runtime |
+| Integration: real extraction | `bench` | Docker/Podman; container config |
+| Integration/value demo: OpenShift | Streamlit UI, select **OpenShift demo** | OpenShift cluster, MCP services, `oc`, MemoryHub |
 
 **Key difference:** Simulated-tool tests ask "can the LLM use these tools correctly?" Real-system/containerised tests ask "does the full agent + memory system stack work together?"
 

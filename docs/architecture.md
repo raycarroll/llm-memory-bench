@@ -33,13 +33,18 @@ There are two primary axes: **what** you're measuring (experiment family) and
 the source/runtime that supplies their tasks, such as the local dataset, τ², or
 CL-Bench.
 
-**Benchmarks** (what):
+**Benchmark aims** (what):
 
 | Benchmark | Question it answers |
 |-----------|-------------------|
 | **Extraction** | Can the LLM identify implicit triggers and call the memory tool proactively, with the right content? |
-| **Value** | Do stored memories actually improve downstream task performance (quality, tokens, turns)? |
-| **Operational demo** | Can paired agents diagnose and repair a live OpenShift workload, with and without MemoryHub? |
+| **Value** | Do stored memories improve downstream task performance (quality, tokens, turns) across contexts such as functional tasks, personalisation, and domain workflows? |
+
+The repository also contains supporting integration paths. Containerised runs
+exercise a real agent and memory backend, while the OpenShift demo is a
+scenario-specific value/integration demonstration with independent workload
+verification. These paths validate the two benchmark aims in more realistic
+runtimes; they are not a third benchmark aim.
 
 **Execution modes** (how):
 
@@ -47,11 +52,11 @@ CL-Bench.
 |------|-----------|-------------|--------------|-----------|
 | **Simulated-tool** (`run`, `value-run`) | Extraction ✅<br>Value ✅ | Benchmark provides system prompts and tool schemas via Python adapters. Direct provider calls. Tool calls are intercepted and recorded, not executed. Success responses are simulated. | Can the LLM correctly use these memory tools? (prompt design, model capability) | Fast iteration, provider-agnostic, no containers required |
 | **Real-system/containerised** (`bench`, `container-value-run`) | Extraction ✅<br>Value ✅ | Real coding agent (Claude Code) with a real memory system installed inside Docker. The agent makes actual tool calls, data is stored for real, then queried afterward. | Does the full agent + memory system stack work together? (integration, real prompts, actual storage) | Slow, Docker required, tests complete deployed stack |
-| **Direct OpenShift** (Streamlit UI) | Operational demo ✅ | Two API agents use separate Kubernetes MCP endpoints; bounded `oc` commands independently reset and verify the fixture. | Does memory help a real operational repair while preserving an independent verification boundary? | Requires a live cluster and scenario-specific deployment |
+| **Direct OpenShift** (Streamlit UI) | Supporting value/integration path ✅ | Two API agents use separate Kubernetes MCP endpoints; bounded `oc` commands independently reset and verify the fixture. | Does memory help a real operational repair while preserving an independent verification boundary? | Requires a live cluster and scenario-specific deployment |
 
 **Implementation matrix:**
 
-| | Extraction | Value | Operational demo |
+| | Extraction | Value | Integration/value demonstration |
 |---|---|---|---|
 | **Simulated-tool** | ✅ `llm-memory-bench run` | ✅ `llm-memory-bench value-run` | — |
 | **Real-system/containerised** | ✅ `llm-memory-bench bench` | ✅ `llm-memory-bench container-value-run` | — |
