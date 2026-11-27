@@ -4,6 +4,8 @@ metadata:
   name: llm-memory-bench-demo-config
   namespace: llm-memory-bench
 data:
+  # Set this to the kubeconfig context for the intended cluster before deploy.
+  OPENSHIFT_CONTEXT: ""
   MEMORYHUB_MCP_URL: http://memory-hub-mcp.memory-hub-mcp.svc.cluster.local:8080/mcp/
   K8S_MEMORY_MCP_URL: http://demo-memory-mcp.kubernetes-mcp-server.svc.cluster.local:8081/mcp
   K8S_BASELINE_MCP_URL: http://demo-baseline-mcp.kubernetes-mcp-server.svc.cluster.local:8082/mcp

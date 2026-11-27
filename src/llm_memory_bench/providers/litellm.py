@@ -45,6 +45,15 @@ class LiteLLMProvider(LLMProvider):
             )
             if tools:
                 kwargs["tools"] = self._to_openai_tools(tools)
+                if disable_parallel_tool_calls:
+                    kwargs["parallel_tool_calls"] = False
+                if tool_choice and tool_choice != "auto":
+                    kwargs["tool_choice"] = {
+                        "type": "function",
+                        "function": {"name": tool_choice},
+                    }
+                elif tool_choice == "auto":
+                    kwargs["tool_choice"] = "auto"
             response = await litellm.acompletion(**kwargs)
         except Exception as e:
             raise ProviderError(self._friendly_error(e)) from e

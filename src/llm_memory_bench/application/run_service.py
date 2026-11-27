@@ -121,6 +121,9 @@ class RunService:
             for trial in scenario.get("trials", {}).values():
                 for turn in trial.get("turns", []):
                     events.extend(turn.get("integration_events", []))
+        demo = result.get("demo", {})
+        for side in demo.get("sides", {}).values():
+            events.extend(side.get("events", []))
         if events:
             lines.append("")
             lines.append("integration_events:")

@@ -93,3 +93,24 @@ def test_change_validation_supports_configured_non_networkpolicy_resources():
     )
     assert allowed is True
     assert reason == ""
+
+
+def test_memory_writes_are_hidden_until_recovery_is_verified():
+    memory_side = SPEC.sides["memory"].model_copy(
+        update={"memoryhub_tools": ["memoryhub_write"]}
+    )
+    spec = SPEC.model_copy(
+        update={"sides": {"memory": memory_side, "baseline": SPEC.sides["baseline"]}}
+    )
+    demo = DemoToolRuntime(side="memory", spec=spec, memoryhub_api_key="test")
+    demo._tools = {
+        "memoryhub_write": {
+            "name": "memoryhub_write",
+            "parameters": {"type": "object", "properties": {}},
+        }
+    }
+
+    assert demo.tools_for_turn() == []
+    assert demo._requires_memory_write is True
+    demo.enable_memory_writes()
+    assert [tool["name"] for tool in demo.tools_for_turn()] == ["memoryhub_write"]

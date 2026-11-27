@@ -13,15 +13,10 @@ deliberately broken NetworkPolicy scenario.
 
 ## Deployment
 
-- Repository: `/Users/bcapper/Documents/memory/llm-memory-bench`
-- Live route: `https://llm-memory-bench-llm-memory-bench.apps.cluster-2jj9c.dyn.redhatworkshops.io`
-- API: `https://api.cluster-2jj9c.dyn.redhatworkshops.io:6443`
-- OpenShift project: `llm-memory-bench`
-- Latest known build: `llm-memory-bench-21`, reported complete by the user.
-
-The user can currently reach the cluster from their Mac, but this agent session
-has intermittently been unable to resolve the API hostname. Do not infer a
-cluster failure from that limitation.
+Deployment-specific routes, API endpoints, image tags, and OpenShift context
+names must be supplied by the operator. Do not commit them to this handoff
+document. The verifier requires the `OPENSHIFT_CONTEXT` environment variable
+and passes it explicitly to every `oc` command.
 
 ## Scenario
 
@@ -38,23 +33,19 @@ contains broken policies. A successful repair must establish:
 - frontend DNS egress through OpenShift DNS on UDP/TCP `5353`;
 - Ready frontend and dependency pods in both namespaces.
 
-The old harness is the reference for strict verification:
-
-`/Users/bcapper/Documents/src/memory-demo-harness/k8s_environment.py`
-
-Its `verify_network_policy()` function checks pod readiness/restarts, service
-endpoints, exact policy rules, DNS egress, dependency connectivity, frontend
-logs, and final functional state. Do not replace this with generic “evidence
-collected” output.
+The original harness is the behavioral reference for strict verification. Its
+checks cover pod readiness/restarts, service endpoints, exact policy rules, DNS
+egress, dependency connectivity, frontend logs, and final functional state. Do
+not replace this with generic “evidence collected” output.
 
 ## Important implementation files
 
 - `src/llm_memory_bench/ui/app.py`: Demo sidebar, live panels, Markdown,
   prompt/event rendering, reset button, and post-run verification.
-- `src/llm_memory_bench/application/demo_service.py`: preparation, execution,
-  fixture reset, and strict verification.
-- `src/llm_memory_bench/demo/runner.py`: paired provider-neutral agent loops,
-  independent histories, tool events, and token metrics.
+- `src/llm_memory_bench/application/experiments.py`: demo experiment integration.
+- `src/llm_memory_bench/demo/driver.py`: preparation, paired execution, and result assembly.
+- `src/llm_memory_bench/demo/agent.py`: provider-neutral agent loop and tool events.
+- `src/llm_memory_bench/demo/verification.py`: direct, independent fixture reset and verification.
 - `src/llm_memory_bench/demo/runtime.py`: per-side MCP discovery and safety
   rules, including the required memory-search gate.
 - `src/llm_memory_bench/demo/mcp.py`: Streamable-HTTP MCP session adapter.
@@ -62,13 +53,13 @@ collected” output.
 The focused tests previously passed (`7 passed`), but re-run them against the
 current worktree before committing.
 
-## Current failure
+## Historical failure (superseded)
 
-The user saw:
+An earlier implementation reported:
 
 `Demo side failed: CancelledError: Cancelled via cancel scope ...`
 
-The supplied pod log shows the concrete traceback is in post-run verification:
+The historical pod log showed the concrete traceback in post-run verification:
 
 `DemoService.verify_sync -> verify -> StreamableHTTPSession.call_tool(resources_list) -> MCP ClientSession.send_request -> anyio memory stream -> asyncio.exceptions.CancelledError`
 
@@ -76,11 +67,11 @@ The traceback is from `ui/app.py` around line 956. It proves that the
 verification request loses its Kubernetes MCP response stream. It does not by
 itself prove that both agent loops failed.
 
-The UI currently catches `Exception` around verification, but
-`asyncio.CancelledError` inherits from `BaseException`, so it escapes and kills
-the Streamlit script thread. First make verification cancellation-safe and
-report “unavailable/cancelled” without taking down the page. Then investigate
-why the Kubernetes MCP transport/session cancels the request.
+The previous UI caught `Exception` around verification, but
+`asyncio.CancelledError` inherits from `BaseException`, so it escaped and
+killed the Streamlit script thread. This is retained as historical context;
+the current implementation uses direct, bounded `oc` verification and an
+explicit OpenShift context.
 
 The UI must distinguish:
 
@@ -161,24 +152,11 @@ make the permitted NetworkPolicy changes through Kubernetes MCP, and prove the
 functional result. Agent completion alone is not success; independent cluster
 verification is authoritative.
 
-### Current worktree changes
+### Current implementation boundary
 
-There are pre-existing user changes. Preserve them and inspect `git diff` before
-editing or switching branches:
-
-```text
-M demos/network-policy.yaml
-M src/llm_memory_bench/application/demo_service.py
-M src/llm_memory_bench/demo/mcp.py
-M src/llm_memory_bench/demo/runner.py
-M src/llm_memory_bench/demo/runtime.py
-M src/llm_memory_bench/ui/app.py
-M tests/test_demo_runtime.py
-?? Dockerfile
-?? deploy/
-?? docs/agent-handoff.md
-?? docs/openshift-recovery.md
-```
+The demo implementation is under `src/llm_memory_bench/demo/` and is integrated
+through `application/experiments.py` and `application/run_service.py`. Preserve
+unrelated worktree changes when switching branches or applying deployment fixes.
 
 ### Changes made recently
 
@@ -196,10 +174,8 @@ M tests/test_demo_runtime.py
 - `render_live_event` catches Streamlit's internal `StopException` so a browser
   rerun does not recursively crash the shared paired run. Both sides are still
   intended to stop together when the shared run is cancelled.
-- `DemoService.get("Pod")` was changed to use the legacy harness-compatible
-  `pods_list_in_namespace` MCP tool. Generic `resources_list` returns a table,
-  while the verifier needs structured Pod data. The verifier also had to use
-  `Endpoints`, not `Service`, when inspecting endpoint subsets.
+- The direct verifier uses structured Pod and Endpoints responses from `oc`,
+  while the agent continues to use the configured Kubernetes MCP tools.
 
 The latest UI edit is in `src/llm_memory_bench/ui/app.py`. It compiles with:
 
@@ -255,12 +231,12 @@ The most recent requested UI build could not start because the API hostname
 failed DNS resolution:
 
 ```text
-lookup api.cluster-2jj9c.dyn.redhatworkshops.io: no such host
+lookup <cluster-api-host>: no such host
 
 ## Handoff update: 2026-11-20
 
 The active branch is `openshift-demos`, based on `8f3e272`. The old working
-harness at `/Users/bcapper/Documents/src/memory-demo-harness` remains the
+harness remains the
 behavioral source of truth. The newer MCP-based verifier and nested
 completion-verification path are not part of this branch and must not be
 reintroduced.
@@ -278,8 +254,7 @@ reintroduced.
 - `3813fb5` — OpenShift demo UI
 - `8bf2397` — Dockerfile build-context correction
 
-The following remain intentionally untracked and must not be committed unless
-explicitly requested:
+Deployment-specific notes and credentials must remain outside this document:
 
 - `docs/agent-handoff.md`
 - `docs/openshift-demo-transplant-plan.md`
@@ -312,27 +287,27 @@ The local Streamlit health endpoint returned `ok`, and the image was pushed to
 Quay successfully. The Dockerfile was committed in `8bf2397` after removing
 the obsolete `COPY demos ./demos` line; this branch has no `demos/` directory.
 
-A local `.venv` contains the test dependencies. Focused demo tests pass:
+A local environment contains the test dependencies. Current validation is:
 
 ```text
-30 passed
+18 focused demo/provider tests passed; 95 repository tests passed when the
+network-dependent integration-profile module was excluded.
 ```
 
-The full suite reached `75 passed, 3 failed`. Those failures are existing
-integration-profile issues unrelated to the demo: a missing MemoryHub profile
-asset and two lifecycle/credential expectation issues.
+The remaining integration-profile test requires local socket/network access;
+run it in an environment where that capability is available.
 
 ### Current blocker
 
 The user reports the cluster is up, but this agent environment still cannot
 resolve the configured API hostname:
 
-`api.cluster-2jj9c.dyn.redhatworkshops.io`
+`<cluster-api-host>`
 
 Both `oc` and `curl` fail before authentication with:
 
 ```text
-lookup api.cluster-2jj9c.dyn.redhatworkshops.io: no such host
+lookup <cluster-api-host>: no such host
 ```
 
 Do not infer that the cluster is down. Treat this as a local DNS/network-path
@@ -396,7 +371,7 @@ shape bug, not evidence that the workload is absent. Use the old implementation
 as the behavioural reference:
 
 ```text
-/Users/bcapper/Documents/src/memory-demo-harness
+the original behavioral reference harness
 ```
 
 The strict pass requires exact repaired policy rules plus outcome evidence:

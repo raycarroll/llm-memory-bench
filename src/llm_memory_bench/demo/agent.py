@@ -9,7 +9,7 @@ from dataclasses import dataclass, field
 from typing import Any, Callable
 
 from ..providers.base import LLMProvider, ProviderResponse, ToolCall
-from .runtime import DemoToolRuntime, MEMORYHUB_SEARCH_NAME
+from .runtime import DemoToolRuntime, MEMORYHUB_SEARCH_NAME, MEMORYHUB_WRITE_NAME
 from .specs import DemoSpec
 
 
@@ -28,6 +28,7 @@ class DemoAgentResult:
     namespace: str
     status: str
     content: str = ""
+    elapsed_seconds: float = 0.0
     turns: int = 0
     tool_calls: list[DemoToolCall] = field(default_factory=list)
     memory_queries: list[str] = field(default_factory=list)
@@ -66,6 +67,7 @@ class DemoAgent:
         deadline = started + self.spec.limits.timeout_seconds
         messages: list[dict[str, Any]] = [{"role": "user", "content": self.spec.prompt}]
         force_memory_search = False
+        forced_memory_tool: str | None = None
         read_only_calls = 0
 
         try:
@@ -97,7 +99,10 @@ class DemoAgent:
                             ],
                             tools=tools,
                             system=self.spec.system_prompt,
-                            tool_choice=MEMORYHUB_SEARCH_NAME if force_memory_search else "auto",
+                            tool_choice=(
+                                forced_memory_tool
+                                or (MEMORYHUB_SEARCH_NAME if force_memory_search else "auto")
+                            ),
                             disable_parallel_tool_calls=True,
                         ),
                         timeout=remaining,
@@ -133,9 +138,31 @@ class DemoAgent:
                                     ),
                                 })
                                 force_memory_search = False
+                                forced_memory_tool = None
+                                continue
+                            if runtime._requires_memory_write:
+                                runtime.enable_memory_writes()
+                                messages.append({"role": "assistant", "content": response.text})
+                                messages.append({
+                                    "role": "developer",
+                                    "content": (
+                                        "Independent verification passed. Now write the durable "
+                                        "MemoryHub lesson as the final action."
+                                    ),
+                                })
+                                forced_memory_tool = MEMORYHUB_WRITE_NAME
                                 continue
                         result.content = response.text
                         result.status = "completed"
+                        break
+
+                    remaining_calls = self.spec.limits.max_tool_calls - len(result.tool_calls)
+                    if len(response.tool_calls) > remaining_calls:
+                        result.status = "timed_out"
+                        result.error = (
+                            f"maximum tool-call limit ({self.spec.limits.max_tool_calls}) exceeded"
+                        )
+                        self._emit("run_error", error=result.error)
                         break
 
                     tool_results: dict[str, tuple[str, bool]] = {}
@@ -143,6 +170,8 @@ class DemoAgent:
                         call_started = time.monotonic()
                         if force_memory_search and call.name != MEMORYHUB_SEARCH_NAME:
                             text, failed = "Blocked: search MemoryHub first.", True
+                        elif forced_memory_tool and call.name != forced_memory_tool:
+                            text, failed = f"Blocked: call {forced_memory_tool} first.", True
                         else:
                             try:
                                 text, failed = await asyncio.wait_for(
@@ -167,9 +196,18 @@ class DemoAgent:
                         self._emit("tool_completed", name=call.name, result=text, is_error=failed)
                         if call.name == MEMORYHUB_SEARCH_NAME and not failed:
                             result.memory_queries.append(str(call.arguments.get("query", "")))
+                        elif call.name == MEMORYHUB_WRITE_NAME and not failed:
+                            forced_memory_tool = None
                         elif call.name in self.spec.read_only_tools and not failed:
                             read_only_calls += 1
                     messages.extend(self._tool_result_messages(response, tool_results))
+                    if len(result.tool_calls) >= self.spec.limits.max_tool_calls:
+                        result.status = "timed_out"
+                        result.error = (
+                            f"maximum tool-call limit ({self.spec.limits.max_tool_calls}) reached"
+                        )
+                        self._emit("run_error", error=result.error)
+                        break
                     if runtime._requires_memory_search and read_only_calls and not runtime.memory_search_completed:
                         messages.append({
                             "role": "developer",

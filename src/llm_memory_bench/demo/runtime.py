@@ -97,6 +97,8 @@ class DemoToolRuntime:
         self._tools: dict[str, dict[str, Any]] = {}
         self._memoryhub_registered = False
         self.memory_search_completed = False
+        self.memory_write_enabled = False
+        self.memory_write_completed = False
 
     async def __aenter__(self) -> "DemoToolRuntime":
         self._stack = AsyncExitStack()
@@ -136,10 +138,14 @@ class DemoToolRuntime:
         self.memoryhub = None
 
     def tools_for_turn(self) -> list[dict[str, Any]]:
-        """Hide memory-side mutation tools until the required search succeeds."""
+        """Hide gated MemoryHub tools until their prerequisite is satisfied."""
 
+        allowed: set[str] | None = None
         if self._requires_memory_search and not self.memory_search_completed:
             allowed = set(self.spec.read_only_tools) | {MEMORYHUB_SEARCH_NAME}
+        if self._requires_memory_write and not self.memory_write_enabled:
+            allowed = (allowed or set(self._tools)) - {MEMORYHUB_WRITE_NAME}
+        if allowed is not None:
             return [tool for name, tool in self._tools.items() if name in allowed]
         return list(self._tools.values())
 
@@ -151,12 +157,30 @@ class DemoToolRuntime:
             and MEMORYHUB_SEARCH_NAME in self.side_spec.memoryhub_tools
         )
 
+    @property
+    def _requires_memory_write(self) -> bool:
+        return (
+            self.side == "memory"
+            and MEMORYHUB_WRITE_NAME in self.side_spec.memoryhub_tools
+            and not self.memory_write_completed
+        )
+
+    def enable_memory_writes(self) -> None:
+        """Unlock durable writes after the caller has independently verified recovery."""
+        self.memory_write_enabled = True
+
     async def call(self, name: str, arguments: dict[str, Any]) -> tuple[str, bool]:
         """Execute one configured tool after applying scenario guards."""
 
         if name == MEMORYHUB_SEARCH_NAME:
+            if MEMORYHUB_SEARCH_NAME not in self.side_spec.memoryhub_tools:
+                return f"Blocked: {name!r} is not enabled for this demo side.", True
             return await self._search_memory(arguments)
         if name == MEMORYHUB_WRITE_NAME:
+            if MEMORYHUB_WRITE_NAME not in self.side_spec.memoryhub_tools:
+                return f"Blocked: {name!r} is not enabled for this demo side.", True
+            if not self.memory_write_enabled:
+                return "Blocked: verify recovery before writing MemoryHub.", True
             return await self._write_memory(arguments)
         if name not in self._tools:
             return f"Blocked: {name!r} is not enabled for this demo side.", True
@@ -188,7 +212,7 @@ class DemoToolRuntime:
                 self.memoryhub.call_tool(
                     str(self.spec.memoryhub.get("action_tool", "memory")),
                     {
-                        "action": "search",
+                        "action": str(self.spec.memoryhub.get("search_action", "search")),
                         "query": query.strip(),
                         "scope": "project",
                         "project_id": self.spec.memoryhub_project_id,
@@ -214,7 +238,7 @@ class DemoToolRuntime:
                 self.memoryhub.call_tool(
                     str(self.spec.memoryhub.get("action_tool", "memory")),
                     {
-                        "action": "write",
+                        "action": str(self.spec.memoryhub.get("write_action", "write")),
                         "content": content.strip(),
                         "scope": "project",
                         "project_id": self.spec.memoryhub_project_id,
@@ -224,7 +248,10 @@ class DemoToolRuntime:
             )
         except Exception as exc:
             return f"MemoryHub write failed: {type(exc).__name__}: {exc}", True
-        return result_text(result), result_is_error(result)
+        failed = result_is_error(result)
+        if not failed:
+            self.memory_write_completed = True
+        return result_text(result), failed
 
     def _validate_change(self, name: str, arguments: dict[str, Any]) -> tuple[bool, str]:
         if name != "resources_create_or_update":

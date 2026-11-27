@@ -987,3 +987,26 @@ SYSTEMS["my_system"] = MySystem
   ├── dataset_path: str       # Path to converted dataset
   └── max_conversations: int  # Limit for quick tests
 ```
+
+### OpenShift demo experiment
+
+The OpenShift demo is an application-level experiment, not a replacement for
+the extraction or value runners. `RunService` dispatches `kind="demo"` to
+`DemoExperiment`, which loads a scenario contract and delegates to the paired
+demo driver. Each side owns an independent Kubernetes MCP session and
+namespace; the memory side additionally owns a MemoryHub MCP session.
+
+The model's completion is never treated as success by itself. The direct
+OpenShift verifier checks the live workload independently, using an explicit
+`OPENSHIFT_CONTEXT`, and the result stores agent status separately from
+verification status.
+
+```text
+RunSpec(kind="demo")
+        ↓
+RunService → DemoExperiment → demo.driver.run_demo
+                              ├── memory side: Kubernetes MCP + MemoryHub MCP
+                              └── baseline side: Kubernetes MCP
+                                      ↓
+                              direct oc verification
+```

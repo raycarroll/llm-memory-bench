@@ -78,7 +78,10 @@ async def run_demo(
 
     # Demo runs use the dedicated MemoryHub credential by default. The UI's
     # generic RunSpec does not require an api_key_env for this experiment.
-    key = resolve_memoryhub_key(api_key_env)
+    configured_memoryhub_env = spec.memoryhub.get("api_key_env")
+    key = resolve_memoryhub_key(
+        api_key_env or (str(configured_memoryhub_env) if configured_memoryhub_env else None)
+    )
     config_type = type("DemoProviderConfig", (), {"provider": provider_name, "model": model, "api_key_env": api_key_env})
     providers = {side: get_provider(config_type()) for side in spec.sides}
 

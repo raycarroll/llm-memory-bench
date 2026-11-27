@@ -110,6 +110,7 @@ fixture:
                 - {protocol: UDP, port: 5353}
                 - {protocol: TCP, port: 5353}
 verification:
+  context_env: OPENSHIFT_CONTEXT
   frontend_pod_selector: app=frontend
   dependency_pod_selector: app=dependency
   frontend_container: frontend

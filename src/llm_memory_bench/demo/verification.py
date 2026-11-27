@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import os
 import subprocess
 import time
 from typing import Any
@@ -17,6 +18,8 @@ class OpenShiftVerifier:
     def __init__(self, spec: DemoSpec, *, oc_timeout_seconds: float = 20.0):
         self.spec = spec
         self.timeout = oc_timeout_seconds
+        self.context_env = str(spec.verification.get("context_env", "OPENSHIFT_CONTEXT"))
+        self.context = os.getenv(self.context_env)
 
     def preflight(self) -> dict[str, Any]:
         return {"server": self._oc(["whoami", "--show-server"]).strip()}
@@ -180,7 +183,15 @@ class OpenShiftVerifier:
         return pods[0]
 
     def _oc(self, args: list[str]) -> str:
-        completed = subprocess.run(["oc", *args], capture_output=True, text=True, timeout=self.timeout, check=False)
+        if not self.context:
+            raise RuntimeError(f"Set {self.context_env} to the intended OpenShift context")
+        completed = subprocess.run(
+            ["oc", "--context", self.context, *args],
+            capture_output=True,
+            text=True,
+            timeout=self.timeout,
+            check=False,
+        )
         if completed.returncode:
             raise RuntimeError(completed.stderr.strip() or f"oc exited {completed.returncode}")
         return completed.stdout

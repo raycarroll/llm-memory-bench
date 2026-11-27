@@ -1,3 +1,5 @@
+import pytest
+
 from llm_memory_bench.demo import OpenShiftVerifier, load_demo_spec
 
 
@@ -7,6 +9,15 @@ SPEC = load_demo_spec("scenarios/openshift/network-policy.yaml")
 def test_selector_matching_uses_actual_labels():
     assert OpenShiftVerifier._selector_matches({"matchLabels": {"app": "frontend"}}, {"app": "frontend"})
     assert not OpenShiftVerifier._selector_matches({"matchLabels": {"app": "frontend"}}, {"app": "frontend-v1"})
+
+
+def test_oc_requires_explicit_context(monkeypatch):
+    verifier = OpenShiftVerifier(SPEC)
+    verifier.context = None
+    monkeypatch.delenv("OPENSHIFT_CONTEXT", raising=False)
+
+    with pytest.raises(RuntimeError, match="OPENSHIFT_CONTEXT"):
+        verifier._oc(["whoami"])
 
 
 def test_policy_comparison_ignores_rule_order():

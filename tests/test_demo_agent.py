@@ -28,6 +28,26 @@ class FakeProvider:
         return []
 
 
+class ToolThenTextProvider(FakeProvider):
+    async def generate(
+        self,
+        messages,
+        tools,
+        system,
+        tool_choice=None,
+        disable_parallel_tool_calls=False,
+    ):
+        self.calls += 1
+        if self.calls == 1:
+            return ProviderResponse(
+                text="inspect",
+                tool_calls=[ToolCall(name="pods_get", arguments={})],
+                input_tokens=2,
+                output_tokens=1,
+            )
+        return ProviderResponse(text="done", input_tokens=2, output_tokens=1)
+
+
 def test_provider_tool_schema_uses_input_schema():
     provider = FakeProvider()
     agent = DemoAgent(side="baseline", provider=provider, spec=SPEC)
@@ -58,3 +78,27 @@ def test_call_key_is_stable():
     key_b = DemoAgent._call_key(ToolCall(name="pods_get", arguments={"namespace": "x"}))
 
     assert key_a == key_b
+
+
+def test_agent_enforces_max_tool_calls(monkeypatch):
+    provider = ToolThenTextProvider()
+    spec = SPEC.model_copy(
+        update={"limits": SPEC.limits.model_copy(update={"max_tool_calls": 1})}
+    )
+    agent = DemoAgent(side="baseline", provider=provider, spec=spec)
+
+    async def enter(runtime):
+        runtime._tools = {
+            "pods_get": {
+                "name": "pods_get",
+                "parameters": {"type": "object", "properties": {}},
+            }
+        }
+        return runtime
+
+    monkeypatch.setattr("llm_memory_bench.demo.agent.DemoToolRuntime.__aenter__", enter)
+    result = asyncio.run(agent.run())
+
+    assert result.status == "timed_out", result.error
+    assert provider.calls == 1
+    assert len(result.tool_calls) == 1
