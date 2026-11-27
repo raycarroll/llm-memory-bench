@@ -18,10 +18,10 @@ paths for the two benchmark aims, not a third aim.
 Extraction supports both [AlpsBench](https://huggingface.co/datasets/Cosineyx/Alpsbench)
 and BFCL Memory conversations. AlpsBench marks which facts should be saved and
 where each fact appears in the conversation. BFCL Memory asks the agent to
-save facts before answering later questions; this repository can convert its
-source and answer data into cumulative labels for additional analysis. Because
-those BFCL labels are inferred, results from the two datasets are not directly
-comparable.
+save facts before answering later questions. `llm-memory-bench` creates
+cumulative extraction labels by matching BFCL's answer source text to its
+prerequisite conversations; BFCL does not provide these labels directly.
+Results from the two datasets are not directly comparable.
 Value runs use generated or curated scenarios and can also use τ²-bench or
 CL-Bench sources.
 The same experiment model can run against simulated memory tools, real
@@ -672,8 +672,9 @@ llm-memory-bench convert \
   --output datasets/converted/bfcl
 ```
 
-The converter infers which facts to test from BFCL's source and answer data, so
-BFCL results should not be compared directly with AlpsBench's labels. See
+The converter creates cumulative labels by matching BFCL's answer source text
+to its prerequisite conversations. BFCL results should not be compared
+directly with AlpsBench's labels. See
 [docs/bfcl-memory-category.md](docs/bfcl-memory-category.md) for details.
 
 ## Providers
